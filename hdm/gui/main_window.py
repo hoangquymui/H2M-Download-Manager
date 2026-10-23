@@ -10,7 +10,7 @@ import os
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize
-from PySide6.QtGui import QAction, QCursor, QKeySequence, QColor, QFont
+from PySide6.QtGui import QAction, QCloseEvent, QCursor, QKeySequence, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -142,6 +142,9 @@ class MainWindow(QMainWindow):
         self.current_filter_status: Optional[TaskStatus] = None
         self.current_filter_code: str = "all"
         self.search_query: str = ""
+
+        self._force_quit: bool = False
+        self._tray_notified: bool = False
 
         self.theme: str = current_theme()
         self.palette_colors: Dict[str, str] = get_palette(self.theme)
@@ -425,7 +428,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         act_exit = QAction("Thoát", self)
         act_exit.setShortcut(QKeySequence("Ctrl+Q"))
-        act_exit.triggered.connect(self.close)
+        act_exit.triggered.connect(self.exit_app)
         file_menu.addAction(act_exit)
 
         # Tasks Menu
@@ -608,10 +611,10 @@ class MainWindow(QMainWindow):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(self)
             self.tray.setIcon(icon)
-            self.tray.setToolTip("HDM — H2M Download Manager")
+            self.tray.setToolTip("H2M Download Manager")
 
             tray_menu = QMenu(self)
-            act_show = tray_menu.addAction("Mở giao diện HDM")
+            act_show = tray_menu.addAction("Mở giao diện H2M")
             act_show.triggered.connect(self.show_and_raise)
 
             tray_menu.addSeparator()
@@ -623,15 +626,45 @@ class MainWindow(QMainWindow):
 
             tray_menu.addSeparator()
             act_quit = tray_menu.addAction("Thoát hoàn toàn")
-            act_quit.triggered.connect(QApplication.instance().quit)
+            act_quit.triggered.connect(self.exit_app)
 
             self.tray.setContextMenu(tray_menu)
             self.tray.activated.connect(self._on_tray_activated)
             self.tray.show()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.Trigger:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.show_and_raise()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Minimize to system tray when the user clicks 'X', keeping downloads active."""
+        if self._force_quit:
+            if hasattr(self, "tray") and self.tray:
+                self.tray.hide()
+            event.accept()
+            return
+
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            event.ignore()
+            self.hide()
+            if not self._tray_notified and hasattr(self, "tray") and self.tray:
+                self._tray_notified = True
+                self.tray.showMessage(
+                    "H2M Download Manager",
+                    "Ứng dụng vẫn đang chạy ngầm trong khay hệ thống.\nNhấp chuột vào biểu tượng khay để mở lại.",
+                    QSystemTrayIcon.Information,
+                    2500,
+                )
+        else:
+            event.accept()
+
+    def exit_app(self) -> None:
+        """Completely exit the application and terminate background processes."""
+        self._force_quit = True
+        if hasattr(self, "tray") and self.tray:
+            self.tray.hide()
+        self.close()
+        QApplication.instance().quit()
 
     def show_and_raise(self) -> None:
         self.show()

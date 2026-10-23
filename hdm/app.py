@@ -102,6 +102,9 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setWindowIcon(get_app_icon())
 
+    # Do not quit the application when the main window is hidden/closed (minimize to tray)
+    app.setQuitOnLastWindowClosed(False)
+
     # 1. Initialize configuration and queue manager
     config_mgr = ConfigManager()
 
