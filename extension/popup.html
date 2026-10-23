@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>HDM Download Manager</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="logo-title">
+      <img src="icons/icon32.png" alt="HDM" class="logo">
+      <div>
+        <div class="title">HDM Manager</div>
+        <div class="subtitle">Trình bắt link siêu tốc</div>
+      </div>
+    </div>
+    <div id="status-badge" class="badge disconnected">Mất kết nối</div>
+  </div>
+
+  <div class="card">
+    <div class="toggle-row">
+      <span class="label">Tự động bắt link tải:</span>
+      <label class="switch">
+        <input type="checkbox" id="chk-intercept" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card info-card" id="info-box">
+    <div class="info-row">
+      <span>Đang tải:</span>
+      <strong id="active-tasks">0 tác vụ</strong>
+    </div>
+    <div class="info-row">
+      <span>Tốc độ:</span>
+      <strong id="total-speed">0 KB/s</strong>
+    </div>
+    <div class="info-row">
+      <span>Cổng kết nối:</span>
+      <span class="port-tag">127.0.0.1:9618</span>
+    </div>
+  </div>
+
+  <button id="btn-open-hdm" class="btn-primary">Mở ứng dụng HDM</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>
