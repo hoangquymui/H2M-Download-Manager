@@ -301,7 +301,11 @@ class DownloadEngine:
                 ydl_opts["merge_output_format"] = "mp4"
 
         if self.task.headers:
-            ydl_opts["http_headers"] = dict(self.task.headers)
+            headers = dict(self.task.headers)
+            headers.pop("Cookie", None)
+            headers.pop("cookie", None)
+            if headers:
+                ydl_opts["http_headers"] = headers
 
         try:
             def do_dl():

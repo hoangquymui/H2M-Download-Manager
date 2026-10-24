@@ -22,6 +22,14 @@
     </svg>
   `;
 
+  const SVG_ALERT_ICON = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"></circle>
+      <line x1="12" y1="8" x2="12" y2="12"></line>
+      <line x1="12" y1="16" x2="12.01" y2="16"></line>
+    </svg>
+  `;
+
   function isYouTube() {
     return (
       window.location.hostname.includes("youtube.com") ||
@@ -75,18 +83,25 @@
     return container || video.parentElement || video;
   }
 
-  function triggerDownload(formatType, sourceBtn, video) {
-    if (sourceBtn) {
-      sourceBtn.classList.add("success");
-      const originalHtml = sourceBtn.innerHTML;
-      sourceBtn.innerHTML = SVG_CHECK_ICON;
-      sourceBtn.setAttribute("title", "Đang mở HDM...");
+  function showToast(msg, isError) {
+    let toast = document.querySelector(".hdm-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.className = "hdm-toast";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.className = `hdm-toast show ${isError ? "error" : "success"}`;
+    setTimeout(() => {
+      toast.className = "hdm-toast";
+    }, 4000);
+  }
 
-      setTimeout(() => {
-        sourceBtn.classList.remove("success");
-        sourceBtn.innerHTML = originalHtml;
-        sourceBtn.setAttribute("title", "Tải video này với HDM");
-      }, 2200);
+  function triggerDownload(formatType, sourceBtn, video) {
+    const originalHtml = sourceBtn ? sourceBtn.innerHTML : "";
+    if (sourceBtn) {
+      sourceBtn.classList.add("loading");
+      sourceBtn.setAttribute("title", "Đang kết nối HDM...");
     }
 
     const pageUrl = window.location.href;
@@ -99,16 +114,51 @@
       }
     }
 
-    chrome.runtime.sendMessage({
-      action: "download_media",
-      data: {
-        url: targetUrl,
-        pageUrl: pageUrl,
-        title: getVideoTitle(),
-        format: formatType || "mp4",
-        isStreaming: isYouTube(),
+    chrome.runtime.sendMessage(
+      {
+        action: "download_media",
+        data: {
+          url: targetUrl,
+          pageUrl: pageUrl,
+          title: getVideoTitle(),
+          format: formatType || "mp4",
+          isStreaming: isYouTube(),
+        },
       },
-    });
+      (res) => {
+        const lastErr = chrome.runtime.lastError;
+        if (sourceBtn) sourceBtn.classList.remove("loading");
+
+        if (lastErr || !res || !res.ok) {
+          if (sourceBtn) {
+            sourceBtn.classList.add("error");
+            sourceBtn.innerHTML = SVG_ALERT_ICON;
+            sourceBtn.setAttribute(
+              "title",
+              "Không thể kết nối với HDM. Vui lòng mở ứng dụng HDM trên máy tính!"
+            );
+            setTimeout(() => {
+              sourceBtn.classList.remove("error");
+              sourceBtn.innerHTML = originalHtml;
+              sourceBtn.setAttribute("title", "Tải video này với HDM");
+            }, 3000);
+          }
+          showToast("⚠️ Vui lòng mở ứng dụng HDM (HDM.exe) trên máy tính trước khi bấm tải!", true);
+        } else {
+          if (sourceBtn) {
+            sourceBtn.classList.add("success");
+            sourceBtn.innerHTML = SVG_CHECK_ICON;
+            sourceBtn.setAttribute("title", "✓ Đã mở HDM thành công!");
+            setTimeout(() => {
+              sourceBtn.classList.remove("success");
+              sourceBtn.innerHTML = originalHtml;
+              sourceBtn.setAttribute("title", "Tải video này với HDM");
+            }, 2500);
+          }
+          showToast("✓ Đã gửi lệnh tới HDM! Vui lòng xác nhận tải trên cửa sổ HDM.", false);
+        }
+      }
+    );
   }
 
   function createOutsideButton(video, container) {

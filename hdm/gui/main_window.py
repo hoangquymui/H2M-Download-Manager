@@ -727,6 +727,7 @@ class MainWindow(QMainWindow):
                 connections=res["connections"],
                 auto_start=res["auto_start"],
             )
+            self.show_and_raise()
 
     def show_settings_dialog(self) -> None:
         old_lang = get_language()

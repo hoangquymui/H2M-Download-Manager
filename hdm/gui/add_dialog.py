@@ -67,7 +67,11 @@ class ProbeWorker(QThread):
                     "noplaylist": True,
                 }
                 if self.custom_headers:
-                    ydl_opts["http_headers"] = self.custom_headers
+                    probe_headers = dict(self.custom_headers)
+                    probe_headers.pop("Cookie", None)
+                    probe_headers.pop("cookie", None)
+                    if probe_headers:
+                        ydl_opts["http_headers"] = probe_headers
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.url, download=False)
                     title = info.get("title", "")
