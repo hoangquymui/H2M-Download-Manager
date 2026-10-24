@@ -118,6 +118,7 @@ class MainBridge(QObject):
     task_added_signal = Signal(object)
     task_updated_signal = Signal(object)
     show_window_signal = Signal()
+    download_requested_signal = Signal(dict)
 
 
 class MainWindow(QMainWindow):
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
         self.bridge.task_added_signal.connect(self._on_task_added_signal)
         self.bridge.task_updated_signal.connect(self._on_task_updated_signal)
         self.bridge.show_window_signal.connect(self.show_and_raise)
+        self.bridge.download_requested_signal.connect(self.show_confirm_download_dialog)
 
         # Connect manager callbacks to bridge
         self.manager.on_task_added = lambda t: self.bridge.task_added_signal.emit(t)
@@ -686,16 +688,44 @@ class MainWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def show_add_dialog(self, initial_url: str = "") -> None:
-        dlg = AddDownloadDialog(self.config, initial_url=initial_url, parent=self)
+    def show_add_dialog(self, initial_url: Any = "") -> None:
+        """Open the IDM-style download confirmation dialog.
+        Auto-reads clipboard if no URL is explicitly provided.
+        """
+        url = initial_url if isinstance(initial_url, str) else ""
+        if not url:
+            clip = QApplication.clipboard().text().strip()
+            if clip.startswith("http://") or clip.startswith("https://"):
+                url = clip
+
+        self.show_confirm_download_dialog({"url": url, "is_captured": False})
+
+    def show_confirm_download_dialog(self, data: dict) -> None:
+        """Display IDM-style download confirmation modal with file probe and actions."""
+        url = data.get("url", "")
+        filename = data.get("filename", "")
+        headers = data.get("headers", {})
+        is_captured = data.get("is_captured", True)
+
+        self.show_and_raise()
+
+        dlg = AddDownloadDialog(
+            config=self.config,
+            initial_url=url,
+            initial_filename=filename,
+            custom_headers=headers,
+            is_captured=is_captured,
+            parent=self,
+        )
         if dlg.exec():
-            data = dlg.get_result_data()
+            res = dlg.get_result_data()
             self.manager.add_task(
-                url=data["url"],
-                save_dir=data["save_dir"],
-                filename=data["filename"],
-                connections=data["connections"],
-                auto_start=data["auto_start"],
+                url=res["url"],
+                save_dir=res["save_dir"],
+                filename=res["filename"],
+                headers=res.get("headers"),
+                connections=res["connections"],
+                auto_start=res["auto_start"],
             )
 
     def show_settings_dialog(self) -> None:

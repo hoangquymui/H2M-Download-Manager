@@ -34,6 +34,7 @@ class Config:
     theme: str = "dark"
     language: str = "vi"                # "vi" or "en"
     start_with_windows: bool = False    # Auto-start with Windows on boot
+    show_download_dialog: bool = True   # Show IDM-style confirmation modal on link capture
     speed_limit_kbps: int = 0           # 0 = unlimited
 
     def to_dict(self) -> Dict[str, Any]:

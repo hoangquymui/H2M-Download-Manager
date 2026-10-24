@@ -98,6 +98,26 @@ def get_icon(name: str, color_hex: str = "#60A5FA", size: int = 36) -> QIcon:
         path.closeSubpath()
         painter.drawPath(path)
 
+    elif name == "download":
+        # Arrow pointing down into tray
+        pen.setWidthF(2.2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLine(QPointF(12, 4), QPointF(12, 14.5))
+        # Arrowhead
+        path = QPainterPath()
+        path.moveTo(7, 10)
+        path.lineTo(12, 15)
+        path.lineTo(17, 10)
+        painter.drawPath(path)
+        # Base tray
+        tray = QPainterPath()
+        tray.moveTo(4, 15)
+        tray.lineTo(4, 20)
+        tray.lineTo(20, 20)
+        tray.lineTo(20, 15)
+        painter.drawPath(tray)
+
     elif name == "settings":
         # Sleek gear with 6 teeth
         pen.setWidthF(2.0)

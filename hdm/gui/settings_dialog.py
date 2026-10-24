@@ -109,6 +109,10 @@ class SettingsDialog(QDialog):
         self.chk_server.setChecked(self.config.server_enabled)
         grid_browser.addWidget(self.chk_server, 1, 0, 1, 2)
 
+        self.chk_confirm_download = QCheckBox(tr("settings_chk_confirm_download"), self)
+        self.chk_confirm_download.setChecked(getattr(self.config, "show_download_dialog", True))
+        grid_browser.addWidget(self.chk_confirm_download, 2, 0, 1, 2)
+
         layout.addWidget(grp_browser)
 
         # 3. Appearance & Language Group
@@ -182,6 +186,7 @@ class SettingsDialog(QDialog):
         self.config.server_port = self.port_spin.value()
         self.config.auto_categorize = self.chk_categorize.isChecked()
         self.config.server_enabled = self.chk_server.isChecked()
+        self.config.show_download_dialog = self.chk_confirm_download.isChecked()
         self.config.auto_start = self.chk_autostart.isChecked()
         self.config.start_with_windows = self.chk_start_with_windows.isChecked()
         self.config.theme = normalize_theme(self.theme_combo.currentData())

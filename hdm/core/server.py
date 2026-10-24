@@ -21,14 +21,18 @@ class BrowserIntegrationServer:
     def __init__(
         self,
         manager: DownloadQueueManager,
+        config_manager: Optional[Any] = None,
         host: str = "127.0.0.1",
         port: int = 9618,
         on_show_requested: Optional[Callable[[], None]] = None,
+        on_download_requested: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> None:
         self.manager = manager
+        self.config_manager = config_manager
         self.host = host
         self.port = port
         self.on_show_requested = on_show_requested
+        self.on_download_requested = on_download_requested
         self._server: Optional[asyncio.Server] = None
 
     async def start(self) -> None:
@@ -134,13 +138,26 @@ class BrowserIntegrationServer:
                     if "cookies" in payload:
                         custom_headers["Cookie"] = payload["cookies"]
 
-                    task = self.manager.add_task(
-                        url=url,
-                        filename=filename,
-                        headers=custom_headers if custom_headers else None,
-                        auto_start=True,
-                    )
-                    self._send_json(writer, {"ok": True, "task_id": task.id})
+                    show_dialog = True
+                    if self.config_manager and hasattr(self.config_manager, "config"):
+                        show_dialog = getattr(self.config_manager.config, "show_download_dialog", True)
+
+                    if show_dialog and self.on_download_requested:
+                        req_data = {
+                            "url": url,
+                            "filename": filename or "",
+                            "headers": custom_headers,
+                        }
+                        self.on_download_requested(req_data)
+                        self._send_json(writer, {"ok": True, "mode": "dialog"})
+                    else:
+                        task = self.manager.add_task(
+                            url=url,
+                            filename=filename,
+                            headers=custom_headers if custom_headers else None,
+                            auto_start=True,
+                        )
+                        self._send_json(writer, {"ok": True, "task_id": task.id})
                 except Exception as e:
                     self._send_json(writer, {"ok": False, "error": str(e)}, status=500)
 

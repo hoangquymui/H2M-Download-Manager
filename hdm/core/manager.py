@@ -134,6 +134,8 @@ class DownloadQueueManager:
         if not connections or connections <= 0:
             connections = self.config.default_connections
 
+        should_start = auto_start if auto_start is not None else self.config.auto_start
+
         task = DownloadTask(
             url=url,
             filename=filename,
@@ -141,7 +143,7 @@ class DownloadQueueManager:
             headers=headers or {"User-Agent": self.config.user_agent},
             num_connections=connections,
             category=category.value,
-            status=TaskStatus.QUEUED,
+            status=TaskStatus.QUEUED if should_start else TaskStatus.PAUSED,
         )
 
         self.tasks[task.id] = task
@@ -150,7 +152,7 @@ class DownloadQueueManager:
         if self.on_task_added:
             self.on_task_added(task)
 
-        if auto_start if auto_start is not None else self.config.auto_start:
+        if should_start:
             self.start_task(task.id)
 
         return task

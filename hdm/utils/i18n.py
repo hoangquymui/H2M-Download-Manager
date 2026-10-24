@@ -132,8 +132,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_delete_confirm": "Xóa vĩnh viễn",
         "btn_cancel": "Hủy bỏ",
 
-        # Add Download Dialog
+        # Add & Confirm Download Dialog (IDM style)
         "add_dialog_title": "Thêm liên kết tải mới — H2M",
+        "confirm_dialog_title": "Thông tin tệp tải xuống — H2M",
+        "confirm_header_title": "Thông tin tệp tải xuống",
+        "confirm_header_desc": "Xác nhận thông số tệp tin trước khi tải",
         "add_url_label": "Liên kết tải (URL):",
         "add_url_placeholder": "Dán liên kết tải tệp tại đây (http:// hoặc https://)...",
         "add_btn_check": "Kiểm tra",
@@ -144,6 +147,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "add_category": "Danh mục tệp:",
         "add_connections": "Số luồng tải:",
         "add_chk_autostart": "Tự động tải ngay sau khi thêm",
+        "confirm_btn_start_now": "Bắt đầu tải",
+        "confirm_btn_download_later": "Tải sau",
+        "confirm_btn_cancel": "Hủy bỏ",
         "add_btn_start": "Bắt đầu tải",
         "add_btn_close": "Đóng",
         "add_range_yes": "Hỗ trợ tải đa luồng (Range: Có)",
@@ -192,6 +198,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "settings_grp_browser": "🌐 Tích hợp Trình duyệt && Kết nối",
         "settings_port": "Cổng kết nối nội bộ (HTTP):",
         "settings_chk_server": "Bật dịch vụ nhận link tự động từ Extension (Chrome, Edge, Cốc Cốc, Brave)",
+        "settings_chk_confirm_download": "Hiện hộp thoại xác nhận khi bắt link tải từ trình duyệt (giống IDM)",
         "settings_grp_appearance": "🎨 Giao diện && Ngôn ngữ",
         "settings_language": "Ngôn ngữ hiển thị (Language):",
         "settings_theme": "Chủ đề màu sắc:",
@@ -321,8 +328,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "btn_delete_confirm": "Delete Permanently",
         "btn_cancel": "Cancel",
 
-        # Add Download Dialog
+        # Add & Confirm Download Dialog (IDM style)
         "add_dialog_title": "Add Download Link — H2M",
+        "confirm_dialog_title": "Download File Info — H2M",
+        "confirm_header_title": "Download File Info",
+        "confirm_header_desc": "Confirm file parameters before downloading",
         "add_url_label": "Download URL:",
         "add_url_placeholder": "Paste file download link here (http:// or https://)...",
         "add_btn_check": "Check URL",
@@ -333,6 +343,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "add_category": "File category:",
         "add_connections": "Connections:",
         "add_chk_autostart": "Start download immediately after adding",
+        "confirm_btn_start_now": "Start Download",
+        "confirm_btn_download_later": "Download Later",
+        "confirm_btn_cancel": "Cancel",
         "add_btn_start": "Start Download",
         "add_btn_close": "Close",
         "add_range_yes": "Multi-connection supported (Range: Yes)",
@@ -381,6 +394,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "settings_grp_browser": "🌐 Browser Integration && Connection",
         "settings_port": "Internal HTTP port:",
         "settings_chk_server": "Enable browser extension integration (Chrome, Edge, Cốc Cốc, Brave)",
+        "settings_chk_confirm_download": "Show confirmation modal when catching links (like IDM)",
         "settings_grp_appearance": "🎨 Appearance && Language",
         "settings_language": "Display Language:",
         "settings_theme": "Color Theme:",

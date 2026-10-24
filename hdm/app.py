@@ -45,6 +45,7 @@ class AsyncEngineThread(QThread):
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.server: Optional[BrowserIntegrationServer] = None
         self.on_show_window: Optional[callable] = None
+        self.on_download_requested: Optional[callable] = None
         self._stop_event: Optional[asyncio.Event] = None
 
     def run(self) -> None:
@@ -77,9 +78,11 @@ class AsyncEngineThread(QThread):
         if self.config_manager.config.server_enabled:
             self.server = BrowserIntegrationServer(
                 manager=self.manager,
+                config_manager=self.config_manager,
                 host="127.0.0.1",
                 port=self.config_manager.config.server_port,
                 on_show_requested=self.on_show_window,
+                on_download_requested=self.on_download_requested,
             )
             await self.server.start()
 
@@ -106,13 +109,23 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setWindowIcon(get_app_icon())
 
+    # Check if a download URL was passed as command line argument
+    url_arg = ""
+    for arg in sys.argv[1:]:
+        if not arg.startswith("--") and (arg.startswith("http://") or arg.startswith("https://")):
+            url_arg = arg
+            break
+
     # --- Single Instance Enforcement ---
     socket = QLocalSocket()
     socket.connectToServer(SINGLE_INSTANCE_SERVER_NAME)
     if socket.waitForConnected(500):
         # Existing instance found: wake it up and exit immediately
         logger.info("Another instance is already running. Notifying existing window and exiting.")
-        socket.write(b"SHOW\n")
+        if url_arg:
+            socket.write(f"DOWNLOAD {url_arg}\n".encode("utf-8"))
+        else:
+            socket.write(b"SHOW\n")
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
         sys.exit(0)
@@ -143,13 +156,23 @@ def main() -> None:
     # 3. Initialize Main GUI Window
     main_window = MainWindow(download_mgr, config_mgr)
     engine_thread.on_show_window = lambda: main_window.bridge.show_window_signal.emit()
+    engine_thread.on_download_requested = lambda payload: main_window.bridge.download_requested_signal.emit(payload)
 
-    # Wire single-instance IPC requests to raise window
+    # Wire single-instance IPC requests to raise window or trigger IDM-style download confirmation
     def on_ipc_new_connection():
         client = local_server.nextPendingConnection()
         if client:
-            client.readyRead.connect(lambda: main_window.bridge.show_window_signal.emit())
-            main_window.bridge.show_window_signal.emit()
+            def handle_ipc_read():
+                raw = client.readAll().data().decode("utf-8", errors="ignore").strip()
+                if raw.startswith("DOWNLOAD "):
+                    target_url = raw[9:].strip()
+                    main_window.bridge.download_requested_signal.emit({"url": target_url, "is_captured": True})
+                else:
+                    main_window.bridge.show_window_signal.emit()
+
+            client.readyRead.connect(handle_ipc_read)
+            if client.bytesAvailable() > 0:
+                handle_ipc_read()
 
     local_server.newConnection.connect(on_ipc_new_connection)
 
@@ -172,6 +195,8 @@ def main() -> None:
     autostart_mode = "--autostart" in sys.argv
     if not autostart_mode:
         main_window.show()
+        if url_arg:
+            main_window.bridge.download_requested_signal.emit({"url": url_arg, "is_captured": False})
     else:
         logger.info("HDM started automatically on Windows boot (minimized to system tray).")
     sys.exit(app.exec())
