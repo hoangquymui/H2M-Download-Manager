@@ -636,8 +636,17 @@ QComboBox QAbstractItemView {
     outline: none;
 }
 
-/* ===================== Checkbox ===================== */
-QCheckBox { spacing: 8px; color: $text; }
+/* ===================== Checkbox & Radio ===================== */
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: $text;
+    background: transparent;
+    background-color: transparent;
+}
+QGroupBox QCheckBox, QGroupBox QRadioButton {
+    background: transparent;
+    background-color: transparent;
+}
 QCheckBox::indicator {
     width: 17px;
     height: 17px;
