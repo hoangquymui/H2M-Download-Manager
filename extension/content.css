@@ -1,24 +1,47 @@
 /**
  * HDM Browser Extension - Video Download Sniffer Stylesheet
- * Sleek icon-only circular button positioned strictly outside the video viewing box.
+ * Ultra-compact 28px icon button with top-right 'x' dismiss badge,
+ * positioned strictly outside the video viewing box.
  */
 
-/* 1. Floating Icon Button (Outside the Video Box) */
-.hdm-outside-btn {
+/* 1. Wrapper Container for Floating Button & Close Badge */
+.hdm-btn-wrap {
   position: absolute !important;
-  width: 36px !important;
-  height: 36px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  z-index: 2147483647 !important;
+  transition: opacity 0.2s ease, transform 0.2s ease !important;
+}
+
+/* Positioned cleanly above the top-right corner of the video */
+.hdm-btn-wrap.hdm-pos-top {
+  top: -36px !important;
+  right: 8px !important;
+  bottom: auto !important;
+}
+
+/* Positioned cleanly below the bottom-right corner when space above is restricted */
+.hdm-btn-wrap.hdm-pos-bottom {
+  top: calc(100% + 8px) !important;
+  right: 8px !important;
+  bottom: auto !important;
+}
+
+/* 2. Ultra-Compact 28px Circular Download Button */
+.hdm-outside-btn {
+  width: 28px !important;
+  height: 28px !important;
   border-radius: 50% !important;
-  background: rgba(15, 23, 42, 0.92) !important;
-  backdrop-filter: blur(12px) !important;
-  -webkit-backdrop-filter: blur(12px) !important;
+  background: rgba(15, 23, 42, 0.94) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
   border: 1px solid rgba(255, 255, 255, 0.22) !important;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45) !important;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45) !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   cursor: pointer !important;
-  z-index: 2147483647 !important;
   color: #38bdf8 !important;
   user-select: none !important;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
@@ -27,34 +50,20 @@
   box-sizing: border-box !important;
 }
 
-/* Positioned cleanly above the top-right corner of the video */
-.hdm-outside-btn.hdm-pos-top {
-  top: -42px !important;
-  right: 8px !important;
-  bottom: auto !important;
-}
-
-/* Positioned cleanly below the bottom-right corner when space above is restricted */
-.hdm-outside-btn.hdm-pos-bottom {
-  top: calc(100% + 8px) !important;
-  right: 8px !important;
-  bottom: auto !important;
-}
-
 .hdm-outside-btn:hover {
   background: rgba(30, 41, 59, 0.98) !important;
   border-color: #38bdf8 !important;
   color: #60a5fa !important;
-  box-shadow: 0 0 18px rgba(56, 189, 248, 0.45), 0 4px 12px rgba(0, 0, 0, 0.5) !important;
-  transform: scale(1.1) !important;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.45), 0 3px 10px rgba(0, 0, 0, 0.5) !important;
+  transform: scale(1.08) !important;
 }
 
 .hdm-outside-btn svg {
-  width: 19px !important;
-  height: 19px !important;
+  width: 14px !important;
+  height: 14px !important;
   fill: none !important;
   stroke: currentColor !important;
-  stroke-width: 2.2 !important;
+  stroke-width: 2.3 !important;
   stroke-linecap: round !important;
   stroke-linejoin: round !important;
   pointer-events: none !important;
@@ -65,11 +74,42 @@
   background: #059669 !important;
   border-color: #10b981 !important;
   color: #ffffff !important;
-  box-shadow: 0 0 18px rgba(16, 185, 129, 0.5) !important;
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.5) !important;
   transform: scale(1.05) !important;
 }
 
-/* 2. Mini Context Menu for Right-Click Format Options */
+/* 3. Small 'x' Close Badge at Top-Right Corner */
+.hdm-close-x {
+  position: absolute !important;
+  top: -4px !important;
+  right: -4px !important;
+  width: 13px !important;
+  height: 13px !important;
+  border-radius: 50% !important;
+  background: #1e293b !important;
+  border: 1px solid rgba(255, 255, 255, 0.32) !important;
+  color: #94a3b8 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45) !important;
+  transition: all 0.15s ease !important;
+  user-select: none !important;
+  z-index: 10 !important;
+}
+
+.hdm-close-x:hover {
+  background: #ef4444 !important;
+  border-color: #f87171 !important;
+  color: #ffffff !important;
+  transform: scale(1.18) !important;
+}
+
+/* 4. Mini Context Menu for Right-Click Format Options */
 .hdm-mini-menu {
   display: none;
   position: fixed !important;
@@ -81,7 +121,7 @@
   border-radius: 10px !important;
   padding: 6px !important;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6) !important;
-  min-width: 230px !important;
+  min-width: 220px !important;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
   font-size: 12px !important;
   color: #e2e8f0 !important;
@@ -107,7 +147,7 @@
   color: #ffffff !important;
 }
 
-/* 3. YouTube Action Bar Button (Native Integrated Pill) */
+/* 5. YouTube Action Bar Button (Native Integrated Pill) */
 .hdm-yt-action-btn {
   background: rgba(30, 58, 138, 0.45) !important;
   color: #93c5fd !important;

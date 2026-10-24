@@ -1,6 +1,7 @@
 /**
  * HDM Browser Extension - Video Download Sniffer
- * Icon-only button positioned strictly outside the video viewing box.
+ * Ultra-compact 28px icon button with top-right 'x' dismiss badge,
+ * positioned strictly outside the video viewing box.
  */
 
 (function () {
@@ -50,7 +51,6 @@
 
   function findAnchorContainer(video) {
     if (isYouTube()) {
-      // On YouTube, #player is outside #movie_player and does not clip
       const ytPlayer =
         document.querySelector("#player") ||
         document.querySelector("ytd-watch-flexy #player") ||
@@ -58,7 +58,6 @@
       if (ytPlayer) return ytPlayer;
     }
 
-    // Generic sites: find parent container that does not clip overflow
     let container = video.parentElement;
     while (container && container !== document.body) {
       const style = window.getComputedStyle(container);
@@ -113,7 +112,7 @@
   }
 
   function createOutsideButton(video, container) {
-    if (container.querySelector(".hdm-outside-btn")) return;
+    if (container.__hdm_dismissed__ || container.querySelector(".hdm-btn-wrap")) return;
 
     // Ensure container has relative/absolute positioning
     const compStyle = window.getComputedStyle(container);
@@ -121,20 +120,43 @@
       container.style.position = "relative";
     }
 
+    // Outer wrapper
+    const wrap = document.createElement("div");
+    wrap.className = "hdm-btn-wrap hdm-pos-top";
+
+    // Main 28px circular button
     const btn = document.createElement("div");
-    btn.className = "hdm-outside-btn hdm-pos-top";
+    btn.className = "hdm-outside-btn";
     btn.setAttribute("title", "Tải video này với HDM (Click để tải)");
     btn.innerHTML = SVG_DOWNLOAD_ICON;
+
+    // Mini 'x' dismiss badge at top-right
+    const closeBtn = document.createElement("div");
+    closeBtn.className = "hdm-close-x";
+    closeBtn.setAttribute("title", "Ẩn nút tải này");
+    closeBtn.innerHTML = "&times;";
+
+    closeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      container.__hdm_dismissed__ = true;
+      wrap.style.opacity = "0";
+      wrap.style.transform = "scale(0.8)";
+      setTimeout(() => wrap.remove(), 200);
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(closeBtn);
 
     // Dynamic placement check (above vs below depending on available space)
     function updatePlacement() {
       const rect = container.getBoundingClientRect();
-      if (rect.top < 46) {
-        btn.classList.remove("hdm-pos-top");
-        btn.classList.add("hdm-pos-bottom");
+      if (rect.top < 40) {
+        wrap.classList.remove("hdm-pos-top");
+        wrap.classList.add("hdm-pos-bottom");
       } else {
-        btn.classList.remove("hdm-pos-bottom");
-        btn.classList.add("hdm-pos-top");
+        wrap.classList.remove("hdm-pos-bottom");
+        wrap.classList.add("hdm-pos-top");
       }
     }
 
@@ -183,7 +205,7 @@
       triggerDownload("mp4", btn, video);
     });
 
-    container.appendChild(btn);
+    container.appendChild(wrap);
   }
 
   function injectYouTubeActionBarButton() {
@@ -223,7 +245,7 @@
       videos.forEach((vid) => {
         if (vid.offsetWidth < 120 && vid.offsetHeight < 80 && !isYouTube()) return;
         const container = findAnchorContainer(vid);
-        if (container) {
+        if (container && !container.__hdm_dismissed__) {
           createOutsideButton(vid, container);
         }
       });
