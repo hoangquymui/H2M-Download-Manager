@@ -73,6 +73,8 @@ class ProbeWorker(QThread):
                     title = info.get("title", "")
                     clean_t = clean_filename(title) if title else "video"
                     ext = info.get("ext", "mp4")
+                    if ext in ("webm", "mkv", "unknown_video"):
+                        ext = "mp4"
                     filename = f"{clean_t}.{ext}"
                     total_bytes = info.get("filesize") or info.get("filesize_approx") or -1
                     self.finished_signal.emit(filename, total_bytes, True)

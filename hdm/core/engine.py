@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -271,8 +272,22 @@ class DownloadEngine:
                 if self.on_progress:
                     self.on_progress(self.task)
 
+        # Locate ffmpeg if available
+        ffmpeg_paths = [
+            r"C:\Program Files\File Converter\ffmpeg.exe",
+            os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
+            shutil.which("ffmpeg"),
+        ]
+        ffmpeg_bin = next((p for p in ffmpeg_paths if p and os.path.exists(p)), None)
+
+        is_audio_only = bool(self.task.filename and self.task.filename.lower().endswith(".mp3"))
+        if is_audio_only:
+            format_spec = "bestaudio/best"
+        else:
+            format_spec = "bestvideo+bestaudio/bestvideo/bestaudio/best"
+
         ydl_opts = {
-            "format": "best[ext=mp4]/best",
+            "format": format_spec,
             "outtmpl": out_pattern,
             "progress_hooks": [progress_hook],
             "quiet": True,
@@ -280,6 +295,11 @@ class DownloadEngine:
             "nocheckcertificate": True,
             "noplaylist": True,
         }
+        if ffmpeg_bin:
+            ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_bin)
+            if not is_audio_only:
+                ydl_opts["merge_output_format"] = "mp4"
+
         if self.task.headers:
             ydl_opts["http_headers"] = dict(self.task.headers)
 
