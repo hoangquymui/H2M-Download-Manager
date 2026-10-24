@@ -258,35 +258,6 @@
     container.appendChild(wrap);
   }
 
-  function injectYouTubeActionBarButton() {
-    if (!isYouTube()) return;
-
-    const actionContainer =
-      document.querySelector("#actions #actions-inner") ||
-      document.querySelector("ytd-watch-metadata #actions") ||
-      document.querySelector("ytd-menu-renderer.ytd-watch-metadata") ||
-      document.querySelector("#top-row #actions");
-
-    if (!actionContainer) return;
-    if (actionContainer.querySelector(".hdm-yt-action-btn")) return;
-
-    const ytBtn = document.createElement("button");
-    ytBtn.className = "hdm-yt-action-btn";
-    ytBtn.setAttribute("title", "Tải video này với HDM");
-    ytBtn.innerHTML = `
-      <span class="hdm-yt-icon">${SVG_DOWNLOAD_ICON}</span>
-      <span class="hdm-yt-text">Tải HDM</span>
-    `;
-
-    ytBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      triggerDownload("mp4", ytBtn, null);
-    });
-
-    actionContainer.appendChild(ytBtn);
-  }
-
   function scanVideos() {
     chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
       if (!settings.enableVideoPanel) return;
@@ -299,10 +270,6 @@
           createOutsideButton(vid, container);
         }
       });
-
-      if (isYouTube()) {
-        injectYouTubeActionBarButton();
-      }
     });
   }
 
