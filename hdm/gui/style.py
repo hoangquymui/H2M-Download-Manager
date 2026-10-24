@@ -714,18 +714,25 @@ QLabel#status_tasks { color: $text_muted; font-weight: 500; }
 QGroupBox {
     border: 1px solid $card_border;
     border-radius: 8px;
-    margin-top: 12px;
-    padding: 16px 12px 12px 12px;
+    margin-top: 8px;
+    padding-top: 36px;
+    padding-left: 14px;
+    padding-right: 14px;
+    padding-bottom: 14px;
     font-weight: 700;
     color: $group_title;
     background-color: $card_bg;
 }
 QGroupBox::title {
-    subcontrol-origin: margin;
+    subcontrol-origin: content;
     subcontrol-position: top left;
-    left: 12px;
-    padding: 0 6px;
-    background-color: $bg;
+    left: 2px;
+    top: -26px;
+    font-weight: 700;
+    font-size: 13px;
+    color: $group_title;
+    background: transparent;
+    background-color: transparent;
 }
 QFrame#info_card, QFrame#form_card {
     background-color: $card_bg;
