@@ -48,7 +48,7 @@ from hdm.utils.category import FileCategory
 from hdm.utils.formatters import format_bytes, format_date, format_eta, format_speed
 from hdm.utils.system import get_app_icon, launch_file, open_file_in_explorer, open_folder
 
-from hdm.utils.i18n import get_category_display, get_status_display, tr
+from hdm.utils.i18n import get_category_display, get_language, get_status_display, tr
 
 STATUS_FILTER_SPECS = [
     ("all", ""),
@@ -529,11 +529,6 @@ class MainWindow(QMainWindow):
         self.search_input = QLineEdit(self)
         self.search_input.setObjectName("search_input")
         self.search_input.setPlaceholderText(tr("toolbar_search_placeholder"))
-        self.search_input.setFixedWidth(230)
-        self.search_input.setFixedHeight(30)
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.textChanged.connect(self._on_search_changed)
-        toolbar.addWidget(self.search_input)
         self.search_input.setFixedWidth(230)
         self.search_input.setFixedHeight(30)
         self.search_input.setClearButtonEnabled(True)
