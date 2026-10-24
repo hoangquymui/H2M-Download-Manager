@@ -8,6 +8,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict
 
+from hdm.utils.i18n import normalize_language, set_language
 from hdm.utils.system import get_app_data_folder, get_default_downloads_folder
 
 
@@ -31,6 +32,7 @@ class Config:
     auto_start: bool = True
     user_agent: str = DEFAULT_USER_AGENT
     theme: str = "dark"
+    language: str = "vi"                # "vi" or "en"
     speed_limit_kbps: int = 0           # 0 = unlimited
 
     def to_dict(self) -> Dict[str, Any]:
@@ -55,16 +57,20 @@ class ConfigManager:
             try:
                 with open(self.config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return Config.from_dict(data)
+                    cfg = Config.from_dict(data)
+                    set_language(cfg.language)
+                    return cfg
             except Exception:
                 pass
         config = Config()
+        set_language(config.language)
         self.save(config)
         return config
 
     def save(self, config: Config | None = None) -> None:
         if config is not None:
             self.config = config
+        set_language(self.config.language)
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(self.config.to_dict(), f, indent=2, ensure_ascii=False)

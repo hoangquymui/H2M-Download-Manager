@@ -32,6 +32,7 @@ from hdm.core.sparse_file import check_free_space
 from hdm.gui.style import get_palette
 from hdm.utils.category import FileCategory, get_category_for_filename
 from hdm.utils.formatters import extract_filename_from_url, format_bytes
+from hdm.utils.i18n import get_category_display, tr
 
 
 class ProbeWorker(QThread):
@@ -83,7 +84,7 @@ class AddDownloadDialog(QDialog):
         self.initial_url = initial_url
         self.probe_worker: Optional[ProbeWorker] = None
 
-        self.setWindowTitle("Thêm liên kết tải mới — HDM")
+        self.setWindowTitle(tr("add_dialog_title"))
         self.setMinimumWidth(580)
         self.setMaximumWidth(760)
         self.setModal(True)
@@ -99,18 +100,18 @@ class AddDownloadDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         # 1. URL Section
-        url_label = QLabel("Địa chỉ tải xuống (URL):", self)
+        url_label = QLabel(tr("add_url_label"), self)
         url_label.setObjectName("section_label")
         layout.addWidget(url_label)
 
         url_row = QHBoxLayout()
         url_row.setSpacing(8)
         self.url_input = QLineEdit(self)
-        self.url_input.setPlaceholderText("Dán liên kết tải xuống tại đây (http:// hoặc https://)...")
+        self.url_input.setPlaceholderText(tr("add_url_placeholder"))
         self.url_input.textChanged.connect(self._on_url_changed)
         url_row.addWidget(self.url_input)
 
-        self.btn_probe = QPushButton("Kiểm tra link", self)
+        self.btn_probe = QPushButton(tr("add_btn_check"), self)
         self.btn_probe.setObjectName("btn_secondary")
         self.btn_probe.setMinimumWidth(135)
         self.btn_probe.clicked.connect(self._on_probe_clicked)
@@ -135,20 +136,20 @@ class AddDownloadDialog(QDialog):
         card_layout.setSpacing(10)
 
         # Filename
-        card_layout.addWidget(QLabel("Tên tệp lưu vào máy:", self))
+        card_layout.addWidget(QLabel(tr("add_file_name"), self))
         self.filename_input = QLineEdit(self)
-        self.filename_input.setPlaceholderText("Tên tệp...")
+        self.filename_input.setPlaceholderText("...")
         card_layout.addWidget(self.filename_input)
 
         # Save Directory
-        card_layout.addWidget(QLabel("Thư mục lưu:", self))
+        card_layout.addWidget(QLabel(tr("add_save_to"), self))
         dir_row = QHBoxLayout()
         dir_row.setSpacing(8)
         self.dir_input = QLineEdit(self)
         self.dir_input.setText(self.config.default_save_dir)
         dir_row.addWidget(self.dir_input)
 
-        btn_browse = QPushButton("Chọn...", self)
+        btn_browse = QPushButton(tr("add_btn_browse"), self)
         btn_browse.setObjectName("btn_secondary")
         btn_browse.setFixedWidth(80)
         btn_browse.clicked.connect(self._on_browse_clicked)
@@ -160,14 +161,14 @@ class AddDownloadDialog(QDialog):
         opt_grid.setHorizontalSpacing(14)
         opt_grid.setVerticalSpacing(4)
 
-        opt_grid.addWidget(QLabel("Phân loại:", self), 0, 0)
+        opt_grid.addWidget(QLabel(tr("add_category"), self), 0, 0)
         self.cat_combo = QComboBox(self)
         for cat in FileCategory:
             if cat != FileCategory.ALL:
-                self.cat_combo.addItem(cat.value)
+                self.cat_combo.addItem(get_category_display(cat.value), cat.value)
         opt_grid.addWidget(self.cat_combo, 1, 0)
 
-        opt_grid.addWidget(QLabel("Số luồng tải:", self), 0, 1)
+        opt_grid.addWidget(QLabel(tr("add_connections"), self), 0, 1)
         self.conn_spin = QSpinBox(self)
         self.conn_spin.setRange(1, 32)
         self.conn_spin.setValue(self.config.default_connections)
@@ -177,7 +178,7 @@ class AddDownloadDialog(QDialog):
         layout.addWidget(card)
 
         # 4. Checkbox
-        self.chk_auto_start = QCheckBox("Bắt đầu tải ngay lập tức sau khi thêm", self)
+        self.chk_auto_start = QCheckBox(tr("add_chk_autostart"), self)
         self.chk_auto_start.setChecked(self.config.auto_start)
         layout.addWidget(self.chk_auto_start)
 
@@ -187,12 +188,12 @@ class AddDownloadDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
-        btn_cancel = QPushButton("Hủy bỏ", self)
+        btn_cancel = QPushButton(tr("btn_cancel"), self)
         btn_cancel.setObjectName("btn_secondary")
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_cancel)
 
-        self.btn_download = QPushButton("⬇ Bắt đầu tải", self)
+        self.btn_download = QPushButton(f"⬇ {tr('add_btn_start')}", self)
         self.btn_download.clicked.connect(self._on_accept_clicked)
         btn_row.addWidget(self.btn_download)
 
@@ -214,14 +215,14 @@ class AddDownloadDialog(QDialog):
             return
 
         self.btn_probe.setEnabled(False)
-        self.btn_probe.setText("Đang kiểm tra...")
+        self.btn_probe.setText(tr("add_btn_checking"))
         self.info_box.setVisible(True)
         colors = get_palette()
         self.info_box.setStyleSheet(
             f"background-color: {colors['accent_soft']};"
             f" border: 1px solid {colors['accent_border']}; border-radius: 6px;"
         )
-        self.info_label.setText("⏳ Đang truy vấn máy chủ từ xa...")
+        self.info_label.setText("⏳ ...")
         self.info_label.setStyleSheet(f"color: {colors['info']}; font-weight: 500;")
 
         self.probe_worker = ProbeWorker(url, self.config.user_agent)
@@ -231,20 +232,20 @@ class AddDownloadDialog(QDialog):
 
     def _on_probe_finished(self, filename: str, total_bytes: int, supports_range: bool) -> None:
         self.btn_probe.setEnabled(True)
-        self.btn_probe.setText("Kiểm tra link")
+        self.btn_probe.setText(tr("add_btn_check"))
 
         if filename:
             self.filename_input.setText(filename)
             cat = get_category_for_filename(filename)
-            idx = self.cat_combo.findText(cat.value)
+            idx = self.cat_combo.findText(get_category_display(cat.value))
             if idx >= 0:
                 self.cat_combo.setCurrentIndex(idx)
 
-        size_text = format_bytes(total_bytes) if total_bytes > 0 else "Không rõ kích thước"
-        range_text = "Hỗ trợ đa luồng & Tiếp tục tải (Range 206)" if supports_range else "Chỉ hỗ trợ tải 1 luồng"
+        size_text = format_bytes(total_bytes) if total_bytes > 0 else "--"
+        range_text = tr("add_range_yes") if supports_range else tr("add_range_no")
 
         has_space, free_bytes, _ = check_free_space(self.dir_input.text(), total_bytes)
-        space_str = f"Trống {format_bytes(free_bytes)}"
+        space_str = tr("add_free_space", space=format_bytes(free_bytes))
 
         self.info_box.setVisible(True)
         colors = get_palette()
@@ -254,8 +255,8 @@ class AddDownloadDialog(QDialog):
                 f" border: 1px solid {colors['danger_border']}; border-radius: 6px;"
             )
             self.info_label.setText(
-                f"📦 Dung lượng: {size_text}  •  {range_text}\n"
-                f"⚠️ CẢNH BÁO: Ổ đĩa lưu không đủ dung lượng ({space_str}). Hãy đổi sang thư mục trên ổ khác (như D:)!"
+                f"📦 {size_text}  •  {range_text}\n"
+                f"⚠️ {space_str}"
             )
             self.info_label.setStyleSheet(
                 f"color: {colors['danger']}; font-weight: 700; font-size: 11px;"
@@ -265,27 +266,27 @@ class AddDownloadDialog(QDialog):
                 f"background-color: {colors['success_bg']};"
                 f" border: 1px solid {colors['success_border']}; border-radius: 6px;"
             )
-            self.info_label.setText(f"✓ Dung lượng: {size_text}  |  ⚡ {range_text}  |  📁 {space_str}")
+            self.info_label.setText(f"✓ {size_text}  |  ⚡ {range_text}  |  📁 {space_str}")
             self.info_label.setStyleSheet(
                 f"color: {colors['success']}; font-weight: 600; font-size: 11px;"
             )
 
     def _on_probe_error(self, err_msg: str) -> None:
         self.btn_probe.setEnabled(True)
-        self.btn_probe.setText("Kiểm tra link")
+        self.btn_probe.setText(tr("add_btn_check"))
         self.info_box.setVisible(True)
         colors = get_palette()
         self.info_box.setStyleSheet(
             f"background-color: {colors['warning_bg']};"
             f" border: 1px solid {colors['warning_border']}; border-radius: 6px;"
         )
-        self.info_label.setText(f"⚠️ Chưa lấy được chi tiết tệp: {err_msg}")
+        self.info_label.setText(f"⚠️ {err_msg}")
         self.info_label.setStyleSheet(f"color: {colors['warning']}; font-size: 11px;")
 
     def _on_browse_clicked(self) -> None:
         chosen_dir = QFileDialog.getExistingDirectory(
             self,
-            "Chọn thư mục lưu tệp",
+            tr("add_save_to"),
             self.dir_input.text(),
         )
         if chosen_dir:
@@ -294,12 +295,12 @@ class AddDownloadDialog(QDialog):
     def _on_accept_clicked(self) -> None:
         url = self.url_input.text().strip()
         if not url or not (url.startswith("http://") or url.startswith("https://")):
-            QMessageBox.warning(self, "Lỗi", "Vui lòng nhập đường dẫn URL hợp lệ (http:// hoặc https://).")
+            QMessageBox.warning(self, tr("table_status"), tr("add_err_invalid_url"))
             return
 
         save_dir = self.dir_input.text().strip()
         if not save_dir:
-            QMessageBox.warning(self, "Lỗi", "Vui lòng chọn thư mục lưu tệp.")
+            QMessageBox.warning(self, tr("table_status"), tr("add_save_to"))
             return
 
         self.accept()

@@ -13,6 +13,7 @@ from typing import Optional
 
 from PySide6.QtCore import QThread
 from PySide6.QtGui import QIcon
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
 from hdm.core.config import ConfigManager
@@ -20,6 +21,7 @@ from hdm.core.manager import DownloadQueueManager
 from hdm.core.server import BrowserIntegrationServer
 from hdm.gui.main_window import MainWindow
 from hdm.gui.style import apply_theme
+from hdm.utils.i18n import set_language
 from hdm.utils.system import get_app_icon
 
 # Configure root logger
@@ -29,6 +31,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("HDM.App")
+
+SINGLE_INSTANCE_SERVER_NAME = "hdm_single_instance_app_socket"
 
 
 class AsyncEngineThread(QThread):
@@ -102,11 +106,31 @@ def main() -> None:
     app.setStyle("Fusion")
     app.setWindowIcon(get_app_icon())
 
+    # --- Single Instance Enforcement ---
+    socket = QLocalSocket()
+    socket.connectToServer(SINGLE_INSTANCE_SERVER_NAME)
+    if socket.waitForConnected(500):
+        # Existing instance found: wake it up and exit immediately
+        logger.info("Another instance is already running. Notifying existing window and exiting.")
+        socket.write(b"SHOW\n")
+        socket.waitForBytesWritten(1000)
+        socket.disconnectFromServer()
+        sys.exit(0)
+
+    # Clean up any dead socket from an earlier unclean exit
+    QLocalServer.removeServer(SINGLE_INSTANCE_SERVER_NAME)
+    local_server = QLocalServer()
+    if not local_server.listen(SINGLE_INSTANCE_SERVER_NAME):
+        logger.warning(f"Failed to listen on single instance server: {local_server.errorString()}")
+
     # Do not quit the application when the main window is hidden/closed (minimize to tray)
     app.setQuitOnLastWindowClosed(False)
 
     # 1. Initialize configuration and queue manager
     config_mgr = ConfigManager()
+
+    # Synchronize language setting
+    set_language(config_mgr.config.language)
 
     # Apply the saved light/dark theme before any window is created
     apply_theme(app, config_mgr.config.theme)
@@ -120,11 +144,25 @@ def main() -> None:
     main_window = MainWindow(download_mgr, config_mgr)
     engine_thread.on_show_window = lambda: main_window.bridge.show_window_signal.emit()
 
+    # Wire single-instance IPC requests to raise window
+    def on_ipc_new_connection():
+        client = local_server.nextPendingConnection()
+        if client:
+            client.readyRead.connect(lambda: main_window.bridge.show_window_signal.emit())
+            main_window.bridge.show_window_signal.emit()
+
+    local_server.newConnection.connect(on_ipc_new_connection)
+
     engine_thread.start()
 
     # 4. Cleanup on exit
     def cleanup():
         logger.info("Application shutting down...")
+        try:
+            local_server.close()
+            QLocalServer.removeServer(SINGLE_INSTANCE_SERVER_NAME)
+        except Exception:
+            pass
         engine_thread.stop()
         download_mgr.save_tasks()
 

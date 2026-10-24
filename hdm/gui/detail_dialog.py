@@ -25,6 +25,7 @@ from hdm.core.models import DownloadTask, TaskStatus
 from hdm.gui.chunk_widget import ChunkMapWidget
 from hdm.gui.style import get_palette
 from hdm.utils.formatters import format_bytes, format_eta, format_speed
+from hdm.utils.i18n import get_status_display, tr
 from hdm.utils.system import launch_file, open_folder
 
 
@@ -35,7 +36,7 @@ class DownloadDetailDialog(QDialog):
         super().__init__(parent)
         self.task = task
 
-        self.setWindowTitle(f"Chi tiết tải xuống — {self.task.filename}")
+        self.setWindowTitle(tr("detail_dialog_title", filename=self.task.filename))
         self.resize(720, 490)
         self.setMinimumWidth(660)
         self.setMaximumWidth(800)
@@ -68,7 +69,7 @@ class DownloadDetailDialog(QDialog):
         grid.setColumnStretch(3, 1)
 
         # File
-        grid.addWidget(QLabel("Tên tệp:"), 0, 0)
+        grid.addWidget(QLabel(tr("detail_lbl_filename")), 0, 0)
         self.lbl_file = QLabel(self.task.filename)
         self.lbl_file.setObjectName("dialog_value_accent")
         self.lbl_file.setWordWrap(True)
@@ -76,14 +77,14 @@ class DownloadDetailDialog(QDialog):
         grid.addWidget(self.lbl_file, 0, 1)
 
         # Status
-        grid.addWidget(QLabel("Trạng thái:"), 0, 2)
-        self.lbl_status = QLabel(self.task.status.value)
+        grid.addWidget(QLabel(tr("detail_lbl_status")), 0, 2)
+        self.lbl_status = QLabel(get_status_display(self.task.status.value))
         self.lbl_status.setAlignment(Qt.AlignCenter)
         self.lbl_status.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         grid.addWidget(self.lbl_status, 0, 3, Qt.AlignLeft | Qt.AlignVCenter)
 
         # URL
-        grid.addWidget(QLabel("Liên kết:"), 1, 0)
+        grid.addWidget(QLabel(tr("detail_lbl_url")), 1, 0)
         self.url_input = QLineEdit(self.task.url, self)
         self.url_input.setReadOnly(True)
         self.url_input.setToolTip(self.task.url)
@@ -91,13 +92,13 @@ class DownloadDetailDialog(QDialog):
         grid.addWidget(self.url_input, 1, 1, 1, 3)
 
         # Size & Downloaded
-        grid.addWidget(QLabel("Dung lượng:"), 2, 0)
+        grid.addWidget(QLabel(tr("detail_lbl_size")), 2, 0)
         self.lbl_size = QLabel("")
         self.lbl_size.setObjectName("dialog_value")
         grid.addWidget(self.lbl_size, 2, 1)
 
         # Speed & ETA
-        grid.addWidget(QLabel("Tốc độ tải:"), 2, 2)
+        grid.addWidget(QLabel(tr("detail_lbl_speed")), 2, 2)
         self.lbl_speed = QLabel("")
         self.lbl_speed.setObjectName("dialog_value_info")
         grid.addWidget(self.lbl_speed, 2, 3)
@@ -113,7 +114,7 @@ class DownloadDetailDialog(QDialog):
         layout.addWidget(self.progress_bar)
 
         # 3. Chunk Map Visualization Widget
-        map_title = QLabel("Bản đồ phân đoạn luồng tải (Dynamic Chunk Map):", self)
+        map_title = QLabel(tr("detail_chunk_map_title"), self)
         map_title.setObjectName("section_label")
         layout.addWidget(map_title)
 
@@ -124,19 +125,19 @@ class DownloadDetailDialog(QDialog):
         # 4. Action Buttons Footer
         btn_row = QHBoxLayout()
 
-        self.btn_open_file = QPushButton("Mở tệp", self)
+        self.btn_open_file = QPushButton(tr("detail_btn_open_file"), self)
         self.btn_open_file.setObjectName("btn_secondary")
         self.btn_open_file.clicked.connect(lambda: launch_file(self.task.full_path))
         btn_row.addWidget(self.btn_open_file)
 
-        self.btn_open_dir = QPushButton("Mở thư mục", self)
+        self.btn_open_dir = QPushButton(tr("detail_btn_open_dir"), self)
         self.btn_open_dir.setObjectName("btn_secondary")
         self.btn_open_dir.clicked.connect(lambda: open_folder(self.task.save_dir))
         btn_row.addWidget(self.btn_open_dir)
 
         btn_row.addStretch()
 
-        btn_close = QPushButton("Đóng", self)
+        btn_close = QPushButton(tr("detail_btn_close"), self)
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
 
@@ -146,7 +147,7 @@ class DownloadDetailDialog(QDialog):
 
     def _refresh_ui(self) -> None:
         """Poll and refresh the dialog widgets."""
-        self.lbl_status.setText(self.task.status.value)
+        self.lbl_status.setText(get_status_display(self.task.status.value))
 
         # Update status badge color (palette-aware for light/dark themes)
         colors = get_palette()
@@ -195,7 +196,7 @@ class DownloadDetailDialog(QDialog):
         if self.task.status == TaskStatus.DOWNLOADING and self.task.speed > 0:
             speed_str = format_speed(self.task.speed)
             eta_str = format_eta(self.task.eta)
-            self.lbl_speed.setText(f"{speed_str}  (Còn lại: {eta_str})")
+            self.lbl_speed.setText(f"{speed_str}  ({tr('detail_remaining', eta=eta_str)})")
         else:
             self.lbl_speed.setText("--")
 

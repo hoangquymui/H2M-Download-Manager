@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from hdm.core.models import DownloadTask
 from hdm.gui.style import get_palette
 from hdm.utils.formatters import format_bytes, format_speed
+from hdm.utils.i18n import tr
 
 
 class ChunkProgressBar(QWidget):
@@ -148,19 +149,19 @@ class ChunkMapWidget(QWidget):
         legend_row = QHBoxLayout()
         legend_row.setSpacing(14)
 
-        lbl_comp = QLabel("🟢 Hoàn tất", self)
+        lbl_comp = QLabel(tr("detail_legend_done"), self)
         lbl_comp.setObjectName("legend_done")
         legend_row.addWidget(lbl_comp)
 
-        lbl_down = QLabel("🔵 Đang tải", self)
+        lbl_down = QLabel(tr("detail_legend_active"), self)
         lbl_down.setObjectName("legend_active")
         legend_row.addWidget(lbl_down)
 
-        lbl_pend = QLabel("⚪ Chưa tải", self)
+        lbl_pend = QLabel(tr("detail_legend_pending"), self)
         lbl_pend.setObjectName("legend_pending")
         legend_row.addWidget(lbl_pend)
 
-        lbl_info = QLabel("— Dynamic Segmentation tự động chia đôi phân đoạn cho luồng nhàn rỗi", self)
+        lbl_info = QLabel(tr("detail_legend_hint"), self)
         lbl_info.setObjectName("legend_hint")
         legend_row.addWidget(lbl_info)
         legend_row.addStretch()
@@ -171,7 +172,12 @@ class ChunkMapWidget(QWidget):
         self.table = QTableWidget(self)
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels([
-            "Luồng", "Phạm vi", "Dung lượng", "Đã tải", "Tiến độ", "Trạng thái"
+            tr("chunk_col_thread"),
+            tr("chunk_col_range"),
+            tr("chunk_col_size"),
+            tr("chunk_col_downloaded"),
+            tr("chunk_col_progress"),
+            tr("chunk_col_status"),
         ])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
@@ -233,19 +239,19 @@ class ChunkMapWidget(QWidget):
 
             # Trạng thái (tốc độ nằm dưới chữ Đang tải, không dùng icon)
             if c.status == "completed":
-                st = "Hoàn tất"
+                st = tr("chunk_st_completed")
                 color = colors["success"]
             elif c.status == "downloading":
                 if c.speed > 0:
-                    st = f"Đang tải\n({format_speed(c.speed)})"
+                    st = f"{tr('chunk_st_downloading')}\n({format_speed(c.speed)})"
                 else:
-                    st = "Đang tải"
+                    st = tr("chunk_st_downloading")
                 color = colors["info"]
             elif c.status == "failed":
-                st = "Thử lại"
+                st = tr("chunk_st_retry")
                 color = colors["danger"]
             else:
-                st = "Chờ"
+                st = tr("chunk_st_waiting")
                 color = colors["muted"]
 
             item_status = QTableWidgetItem(st)

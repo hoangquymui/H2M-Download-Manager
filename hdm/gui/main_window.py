@@ -48,53 +48,53 @@ from hdm.utils.category import FileCategory
 from hdm.utils.formatters import format_bytes, format_date, format_eta, format_speed
 from hdm.utils.system import get_app_icon, launch_file, open_file_in_explorer, open_folder
 
-CATEGORY_DISPLAY = {
-    FileCategory.COMPRESSED.value: "📦 Nén",
-    FileCategory.PROGRAMS.value: "💻 Phần mềm",
-    FileCategory.VIDEO.value: "🎬 Video",
-    FileCategory.AUDIO.value: "🎵 Âm nhạc",
-    FileCategory.DOCUMENTS.value: "📄 Tài liệu",
-    FileCategory.IMAGES.value: "🖼 Hình ảnh",
-    FileCategory.OTHERS.value: "📂 Khác",
-    "Compressed": "📦 Nén",
-    "Programs": "💻 Phần mềm",
-    "Video": "🎬 Video",
-    "Audio": "🎵 Âm nhạc",
-    "Documents": "📄 Tài liệu",
-    "Images": "🖼 Hình ảnh",
-    "Others": "📂 Khác",
-}
+from hdm.utils.i18n import get_category_display, get_status_display, tr
 
-STATUS_FILTERS = [
-    ("all", "", "Tất cả lượt tải"),
-    ("status_downloading", "⚡", "Đang tải"),
-    ("status_completed", "✅", "Đã hoàn thành"),
-    ("status_paused", "⏸", "Đã tạm dừng"),
-    ("status_error", "❌", "Lỗi / Thất bại"),
+STATUS_FILTER_SPECS = [
+    ("all", ""),
+    ("status_downloading", "⚡"),
+    ("status_completed", "✅"),
+    ("status_paused", "⏸"),
+    ("status_error", "❌"),
 ]
 
-CATEGORY_FILTERS = [
-    ("cat_compressed", "📦", "Nén"),
-    ("cat_programs", "💻", "Phần mềm"),
-    ("cat_video", "🎬", "Video"),
-    ("cat_audio", "🎵", "Âm nhạc"),
-    ("cat_docs", "📄", "Tài liệu"),
-    ("cat_images", "🖼", "Hình ảnh"),
-    ("cat_others", "📂", "Khác"),
+CATEGORY_FILTER_SPECS = [
+    ("cat_compressed", "📦"),
+    ("cat_programs", "💻"),
+    ("cat_video", "🎬"),
+    ("cat_audio", "🎵"),
+    ("cat_docs", "📄"),
+    ("cat_images", "🖼"),
+    ("cat_others", "📂"),
 ]
 
-FILTER_TITLES: Dict[str, str] = {
-    code: title for code, _emoji, title in STATUS_FILTERS + CATEGORY_FILTERS
+FILTER_KEY_MAP = {
+    "all": "sidebar_all",
+    "status_downloading": "sidebar_status_downloading",
+    "status_completed": "sidebar_status_completed",
+    "status_paused": "sidebar_status_paused",
+    "status_error": "sidebar_status_error",
+    "cat_compressed": "cat_compressed",
+    "cat_programs": "cat_programs",
+    "cat_video": "cat_video",
+    "cat_audio": "cat_audio",
+    "cat_docs": "cat_docs",
+    "cat_images": "cat_images",
+    "cat_others": "cat_others",
 }
-FILTER_EMOJI: Dict[str, str] = {
-    code: emoji for code, emoji, _title in STATUS_FILTERS + CATEGORY_FILTERS
-}
+
+FILTER_EMOJIS = {code: emoji for code, emoji in STATUS_FILTER_SPECS + CATEGORY_FILTER_SPECS}
+
+
+def get_filter_title(code: str) -> str:
+    key = FILTER_KEY_MAP.get(code)
+    return tr(key) if key else code
 
 
 def sidebar_label(code: str, count: Optional[int] = None) -> str:
     """Build the display text of a sidebar entry, optionally with a live counter."""
-    emoji = FILTER_EMOJI.get(code, "")
-    title = FILTER_TITLES.get(code, code)
+    emoji = FILTER_EMOJIS.get(code, "")
+    title = get_filter_title(code)
     text = f"  {emoji} {title}" if emoji else f"  {title}"
     return f"{text} ({count})" if count is not None else text
 
@@ -196,14 +196,17 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
 
         self.lbl_server_status = QLabel(
-            f"🟢 Tiện ích trình duyệt: Sẵn sàng (Port {self.config.server_port})", self
+            tr("status_server_ready", port=self.config.server_port)
+            if self.config.server_enabled
+            else tr("status_server_disabled"),
+            self,
         )
         self.lbl_server_status.setObjectName("status_server")
 
-        self.lbl_speed_summary = QLabel("⬇ Tốc độ: 0 KB/s", self)
+        self.lbl_speed_summary = QLabel(tr("status_speed", speed="0 KB/s"), self)
         self.lbl_speed_summary.setObjectName("status_speed")
 
-        self.lbl_tasks_summary = QLabel("0 tác vụ", self)
+        self.lbl_tasks_summary = QLabel(tr("status_tasks_count", count=0), self)
         self.lbl_tasks_summary.setObjectName("status_tasks")
 
         self.status_bar.addWidget(self.lbl_server_status, 1)
@@ -240,10 +243,10 @@ class MainWindow(QMainWindow):
 
         lbl_title = QLabel("H2M", brand)
         lbl_title.setObjectName("brand_title")
-        lbl_sub = QLabel("DOWNLOAD MANAGER", brand)
-        lbl_sub.setObjectName("brand_sub")
+        self.lbl_sub = QLabel(tr("app_subtitle"), brand)
+        self.lbl_sub.setObjectName("brand_sub")
         titles.addWidget(lbl_title)
-        titles.addWidget(lbl_sub)
+        titles.addWidget(self.lbl_sub)
 
         brand_layout.addLayout(titles)
         brand_layout.addStretch()
@@ -258,10 +261,10 @@ class MainWindow(QMainWindow):
         self.sidebar.currentRowChanged.connect(self._on_sidebar_changed)
         layout.addWidget(self.sidebar, 1)
 
-        footer = QLabel("H2M Download Manager v1.0", panel)
-        footer.setObjectName("sidebar_footer")
-        footer.setAlignment(Qt.AlignCenter)
-        layout.addWidget(footer)
+        self.lbl_footer = QLabel(tr("app_version_footer"), panel)
+        self.lbl_footer.setObjectName("sidebar_footer")
+        self.lbl_footer.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_footer)
 
         return panel
 
@@ -283,9 +286,9 @@ class MainWindow(QMainWindow):
         title_box.setContentsMargins(0, 0, 0, 0)
         title_box.setSpacing(1)
 
-        self.page_title = QLabel("Tất cả lượt tải", content)
+        self.page_title = QLabel(get_filter_title(self.current_filter_code), content)
         self.page_title.setObjectName("page_title")
-        self.page_subtitle = QLabel("0 tệp trong danh sách", content)
+        self.page_subtitle = QLabel(tr("page_files_summary", count=0, total=0), content)
         self.page_subtitle.setObjectName("page_subtitle")
         title_box.addWidget(self.page_title)
         title_box.addWidget(self.page_subtitle)
@@ -293,7 +296,7 @@ class MainWindow(QMainWindow):
         header_row.addLayout(title_box)
         header_row.addStretch()
 
-        self.page_badge = QLabel("● 0 đang tải", content)
+        self.page_badge = QLabel(tr("page_badge_downloading", count=0), content)
         self.page_badge.setObjectName("page_badge")
         header_row.addWidget(self.page_badge)
         layout.addLayout(header_row)
@@ -308,9 +311,7 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(card)
         self.table.setObjectName("download_table")
         self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            "Tên tệp", "Danh mục", "Dung lượng", "Tiến độ", "Tốc độ", "Còn lại (ETA)", "Trạng thái", "Ngày thêm"
-        ])
+        self._update_table_headers()
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
@@ -340,8 +341,7 @@ class MainWindow(QMainWindow):
 
         # Friendly empty state shown when no task matches the current filter
         self.empty_label = QLabel(
-            "📥  Chưa có lượt tải nào\n\n"
-            "Nhấn “➕ Thêm URL” hoặc gửi liên kết từ tiện ích trình duyệt để bắt đầu.",
+            tr("empty_state_text"),
             self.table.viewport(),
         )
         self.empty_label.setObjectName("empty_state")
@@ -350,6 +350,18 @@ class MainWindow(QMainWindow):
         self.empty_label.hide()
 
         return content
+
+    def _update_table_headers(self) -> None:
+        self.table.setHorizontalHeaderLabels([
+            tr("table_filename"),
+            tr("table_category"),
+            tr("table_size"),
+            tr("table_progress"),
+            tr("table_speed"),
+            tr("table_eta"),
+            tr("table_status"),
+            tr("table_date_added"),
+        ])
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -363,12 +375,12 @@ class MainWindow(QMainWindow):
 
     def _build_sidebar(self) -> None:
         self.sidebar.clear()
-        self._add_sidebar_header("TRẠNG THÁI")
-        for code, _emoji, _title in STATUS_FILTERS:
+        self._add_sidebar_header(tr("sidebar_header_status"))
+        for code, _emoji in STATUS_FILTER_SPECS:
             self._add_sidebar_item(code)
 
-        self._add_sidebar_header("DANH MỤC TỆP")
-        for code, _emoji, _title in CATEGORY_FILTERS:
+        self._add_sidebar_header(tr("sidebar_header_category"))
+        for code, _emoji in CATEGORY_FILTER_SPECS:
             self._add_sidebar_item(code)
 
         self._update_sidebar_counts()
@@ -419,49 +431,49 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
 
         # File Menu
-        file_menu = menubar.addMenu("Tệp")
-        act_add = QAction("Thêm liên kết tải...", self)
-        act_add.setShortcut(QKeySequence("Ctrl+N"))
-        act_add.triggered.connect(self.show_add_dialog)
-        file_menu.addAction(act_add)
+        self.menu_file = menubar.addMenu(tr("menu_file"))
+        self.act_add = QAction(tr("menu_add_url"), self)
+        self.act_add.setShortcut(QKeySequence("Ctrl+N"))
+        self.act_add.triggered.connect(self.show_add_dialog)
+        self.menu_file.addAction(self.act_add)
 
-        file_menu.addSeparator()
-        act_exit = QAction("Thoát", self)
-        act_exit.setShortcut(QKeySequence("Ctrl+Q"))
-        act_exit.triggered.connect(self.exit_app)
-        file_menu.addAction(act_exit)
+        self.menu_file.addSeparator()
+        self.act_exit = QAction(tr("menu_exit"), self)
+        self.act_exit.setShortcut(QKeySequence("Ctrl+Q"))
+        self.act_exit.triggered.connect(self.exit_app)
+        self.menu_file.addAction(self.act_exit)
 
         # Tasks Menu
-        tasks_menu = menubar.addMenu("Tác vụ")
-        act_resume_all = QAction("Tiếp tục tất cả", self)
-        act_resume_all.triggered.connect(self.manager.resume_all)
-        tasks_menu.addAction(act_resume_all)
+        self.menu_tasks = menubar.addMenu(tr("menu_tasks"))
+        self.act_resume_all = QAction(tr("menu_resume_all"), self)
+        self.act_resume_all.triggered.connect(self.manager.resume_all)
+        self.menu_tasks.addAction(self.act_resume_all)
 
-        act_pause_all = QAction("Tạm dừng tất cả", self)
-        act_pause_all.triggered.connect(self.manager.pause_all)
-        tasks_menu.addAction(act_pause_all)
+        self.act_pause_all = QAction(tr("menu_pause_all"), self)
+        self.act_pause_all.triggered.connect(self.manager.pause_all)
+        self.menu_tasks.addAction(self.act_pause_all)
 
         # Tools Menu
-        tools_menu = menubar.addMenu("Công cụ")
-        act_settings = QAction("Cài đặt...", self)
-        act_settings.triggered.connect(self.show_settings_dialog)
-        tools_menu.addAction(act_settings)
+        self.menu_tools = menubar.addMenu(tr("menu_tools"))
+        self.act_settings = QAction(tr("menu_settings"), self)
+        self.act_settings.triggered.connect(self.show_settings_dialog)
+        self.menu_tools.addAction(self.act_settings)
 
         self.act_toggle_theme = QAction("Chuyển Giao diện Sáng / Tối", self)
         self.act_toggle_theme.setShortcut(QKeySequence("Ctrl+T"))
         self.act_toggle_theme.setCheckable(False)
         self.act_toggle_theme.triggered.connect(self.toggle_theme)
-        tools_menu.addAction(self.act_toggle_theme)
+        self.menu_tools.addAction(self.act_toggle_theme)
 
-        act_ext = QAction("Thư mục Tiện ích trình duyệt (Extension)", self)
-        act_ext.triggered.connect(self._open_extension_dir)
-        tools_menu.addAction(act_ext)
+        self.act_ext = QAction(tr("menu_install_extension"), self)
+        self.act_ext.triggered.connect(self._open_extension_dir)
+        self.menu_tools.addAction(self.act_ext)
 
         # Help Menu
-        help_menu = menubar.addMenu("Trợ giúp")
-        act_about = QAction("Giới thiệu HDM", self)
-        act_about.triggered.connect(self._show_about)
-        help_menu.addAction(act_about)
+        self.menu_help = menubar.addMenu(tr("menu_help"))
+        self.act_about = QAction(tr("menu_about"), self)
+        self.act_about.triggered.connect(self._show_about)
+        self.menu_help.addAction(self.act_about)
 
     def _create_toolbar(self) -> None:
         toolbar = QToolBar("MainToolbar", self)
@@ -472,8 +484,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         # Primary Add Button with crisp vector icon
-        self.btn_add_action = toolbar.addAction(get_icon("add", "#FFFFFF"), "Thêm URL")
-        self.btn_add_action.setToolTip("Thêm liên kết tải mới (Ctrl+N)")
+        self.btn_add_action = toolbar.addAction(get_icon("add", "#FFFFFF"), tr("toolbar_add_url"))
+        self.btn_add_action.setToolTip(tr("toolbar_add_tip"))
         self.btn_add_action.triggered.connect(self.show_add_dialog)
         btn_add_widget = toolbar.widgetForAction(self.btn_add_action)
         if btn_add_widget:
@@ -483,27 +495,27 @@ class MainWindow(QMainWindow):
 
         text_color = self.palette_colors.get("text", "#F1F5F9")
 
-        self.btn_resume_action = toolbar.addAction(get_icon("resume", text_color), "Tiếp tục")
-        self.btn_resume_action.setToolTip("Tiếp tục tải tác vụ đang chọn")
+        self.btn_resume_action = toolbar.addAction(get_icon("resume", text_color), tr("toolbar_resume"))
+        self.btn_resume_action.setToolTip(tr("toolbar_resume_tip"))
         self.btn_resume_action.triggered.connect(self._on_action_resume)
 
-        self.btn_pause_action = toolbar.addAction(get_icon("pause", text_color), "Tạm dừng")
-        self.btn_pause_action.setToolTip("Tạm dừng tác vụ đang chọn")
+        self.btn_pause_action = toolbar.addAction(get_icon("pause", text_color), tr("toolbar_pause"))
+        self.btn_pause_action.setToolTip(tr("toolbar_pause_tip"))
         self.btn_pause_action.triggered.connect(self._on_action_pause)
 
-        self.btn_delete_action = toolbar.addAction(get_icon("delete", text_color), "Xóa")
+        self.btn_delete_action = toolbar.addAction(get_icon("delete", text_color), tr("toolbar_delete"))
         self.btn_delete_action.setShortcut(QKeySequence.Delete)
-        self.btn_delete_action.setToolTip("Xóa tác vụ và xóa luôn tệp khỏi ổ đĩa (Del)")
+        self.btn_delete_action.setToolTip(tr("toolbar_delete_tip"))
         self.btn_delete_action.triggered.connect(self._on_action_delete)
 
         toolbar.addSeparator()
 
-        self.btn_folder_action = toolbar.addAction(get_icon("folder", text_color), "Thư mục")
-        self.btn_folder_action.setToolTip("Mở thư mục lưu tệp tải về")
+        self.btn_folder_action = toolbar.addAction(get_icon("folder", text_color), tr("toolbar_folder"))
+        self.btn_folder_action.setToolTip(tr("toolbar_folder_tip"))
         self.btn_folder_action.triggered.connect(self._on_action_open_folder)
 
-        self.btn_settings_action = toolbar.addAction(get_icon("settings", text_color), "Cài đặt")
-        self.btn_settings_action.setToolTip("Mở cài đặt ứng dụng")
+        self.btn_settings_action = toolbar.addAction(get_icon("settings", text_color), tr("toolbar_settings"))
+        self.btn_settings_action.setToolTip(tr("toolbar_settings_tip"))
         self.btn_settings_action.triggered.connect(self.show_settings_dialog)
 
         # Expanding spacer pushing search box to the right (transparent, no gray box!)
@@ -516,7 +528,12 @@ class MainWindow(QMainWindow):
         # Search Box
         self.search_input = QLineEdit(self)
         self.search_input.setObjectName("search_input")
-        self.search_input.setPlaceholderText("🔍 Tìm kiếm tệp...")
+        self.search_input.setPlaceholderText(tr("toolbar_search_placeholder"))
+        self.search_input.setFixedWidth(230)
+        self.search_input.setFixedHeight(30)
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self._on_search_changed)
+        toolbar.addWidget(self.search_input)
         self.search_input.setFixedWidth(230)
         self.search_input.setFixedHeight(30)
         self.search_input.setClearButtonEnabled(True)
@@ -562,8 +579,8 @@ class MainWindow(QMainWindow):
             going_light = self.theme == "dark"
             button.setIcon(get_icon("sun" if going_light else "moon", self.palette_colors["text"], size=18))
             button.setToolTip(
-                "Chuyển sang giao diện Sáng (Ctrl+T)" if going_light
-                else "Chuyển sang giao diện Tối (Ctrl+T)"
+                tr("toolbar_theme_light_tip") if going_light
+                else tr("toolbar_theme_dark_tip")
             )
 
         # Synchronize action icons to match active theme text color
@@ -580,17 +597,17 @@ class MainWindow(QMainWindow):
         """Keep the page title, subtitle and active-task badge in sync."""
         if not hasattr(self, "page_title"):
             return
-        self.page_title.setText(FILTER_TITLES.get(self.current_filter_code, "Tất cả lượt tải"))
+        self.page_title.setText(get_filter_title(self.current_filter_code))
 
         visible = self.table.rowCount() if hasattr(self, "table") else 0
         total = len(self.manager.tasks)
         if self.search_query:
             self.page_subtitle.setText(
-                f"{visible} kết quả cho “{self.search_query}” • {total} tệp tổng cộng"
+                tr("page_search_results", count=visible, query=self.search_query, total=total)
             )
         else:
-            self.page_subtitle.setText(f"{visible} tệp trong danh sách • {total} tệp tổng cộng")
-        self.page_badge.setText(f"● {self.manager.get_active_count()} đang tải")
+            self.page_subtitle.setText(tr("page_files_summary", count=visible, total=total))
+        self.page_badge.setText(tr("page_badge_downloading", count=self.manager.get_active_count()))
 
     def _sync_empty_state(self) -> None:
         """Show the friendly placeholder only when the table has no rows."""
@@ -611,24 +628,24 @@ class MainWindow(QMainWindow):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(self)
             self.tray.setIcon(icon)
-            self.tray.setToolTip("H2M Download Manager")
+            self.tray.setToolTip(tr("tray_tooltip"))
 
-            tray_menu = QMenu(self)
-            act_show = tray_menu.addAction("Mở giao diện H2M")
-            act_show.triggered.connect(self.show_and_raise)
+            self.tray_menu = QMenu(self)
+            self.act_tray_show = self.tray_menu.addAction(tr("tray_open"))
+            self.act_tray_show.triggered.connect(self.show_and_raise)
 
-            tray_menu.addSeparator()
-            act_pause = tray_menu.addAction("Tạm dừng tất cả")
-            act_pause.triggered.connect(self.manager.pause_all)
+            self.tray_menu.addSeparator()
+            self.act_tray_pause = self.tray_menu.addAction(tr("tray_pause_all"))
+            self.act_tray_pause.triggered.connect(self.manager.pause_all)
 
-            act_resume = tray_menu.addAction("Tiếp tục tất cả")
-            act_resume.triggered.connect(self.manager.resume_all)
+            self.act_tray_resume = self.tray_menu.addAction(tr("tray_resume_all"))
+            self.act_tray_resume.triggered.connect(self.manager.resume_all)
 
-            tray_menu.addSeparator()
-            act_quit = tray_menu.addAction("Thoát hoàn toàn")
-            act_quit.triggered.connect(self.exit_app)
+            self.tray_menu.addSeparator()
+            self.act_tray_quit = self.tray_menu.addAction(tr("tray_exit"))
+            self.act_tray_quit.triggered.connect(self.exit_app)
 
-            self.tray.setContextMenu(tray_menu)
+            self.tray.setContextMenu(self.tray_menu)
             self.tray.activated.connect(self._on_tray_activated)
             self.tray.show()
 
@@ -650,8 +667,8 @@ class MainWindow(QMainWindow):
             if not self._tray_notified and hasattr(self, "tray") and self.tray:
                 self._tray_notified = True
                 self.tray.showMessage(
-                    "H2M Download Manager",
-                    "Ứng dụng vẫn đang chạy ngầm trong khay hệ thống.\nNhấp chuột vào biểu tượng khay để mở lại.",
+                    tr("tray_balloon_title"),
+                    tr("tray_balloon_msg"),
                     QSystemTrayIcon.Information,
                     2500,
                 )
@@ -667,10 +684,12 @@ class MainWindow(QMainWindow):
         QApplication.instance().quit()
 
     def show_and_raise(self) -> None:
+        if self.isMinimized():
+            self.showNormal()
         self.show()
         self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
-        self.activateWindow()
         self.raise_()
+        self.activateWindow()
 
     def show_add_dialog(self, initial_url: str = "") -> None:
         dlg = AddDownloadDialog(self.config, initial_url=initial_url, parent=self)
@@ -685,11 +704,82 @@ class MainWindow(QMainWindow):
             )
 
     def show_settings_dialog(self) -> None:
+        old_lang = get_language()
         dlg = SettingsDialog(self.config_manager, parent=self)
-        dlg.exec()
-        saved_theme = normalize_theme(self.config.theme)
-        if saved_theme != self.theme:
-            self.set_theme(saved_theme, persist=False)
+        if dlg.exec():
+            saved_theme = normalize_theme(self.config.theme)
+            if saved_theme != self.theme:
+                self.set_theme(saved_theme, persist=False)
+            if get_language() != old_lang:
+                self.retranslate_ui()
+
+    def retranslate_ui(self) -> None:
+        """Dynamically re-apply localized strings across all windows and controls."""
+        self.setWindowTitle(tr("app_title"))
+        if hasattr(self, "lbl_sub"):
+            self.lbl_sub.setText(tr("app_subtitle"))
+        if hasattr(self, "lbl_footer"):
+            self.lbl_footer.setText(tr("app_version_footer"))
+
+        # Menus
+        if hasattr(self, "menu_file"):
+            self.menu_file.setTitle(tr("menu_file"))
+            self.act_add.setText(tr("menu_add_url"))
+            self.act_exit.setText(tr("menu_exit"))
+        if hasattr(self, "menu_tasks"):
+            self.menu_tasks.setTitle(tr("menu_tasks"))
+            self.act_resume_all.setText(tr("menu_resume_all"))
+            self.act_pause_all.setText(tr("menu_pause_all"))
+        if hasattr(self, "menu_tools"):
+            self.menu_tools.setTitle(tr("menu_tools"))
+            self.act_settings.setText(tr("menu_settings"))
+            self.act_ext.setText(tr("menu_install_extension"))
+        if hasattr(self, "menu_help"):
+            self.menu_help.setTitle(tr("menu_help"))
+            self.act_about.setText(tr("menu_about"))
+
+        # Toolbar
+        if hasattr(self, "btn_add_action"):
+            self.btn_add_action.setText(tr("toolbar_add_url"))
+            self.btn_add_action.setToolTip(tr("toolbar_add_tip"))
+            self.btn_resume_action.setText(tr("toolbar_resume"))
+            self.btn_resume_action.setToolTip(tr("toolbar_resume_tip"))
+            self.btn_pause_action.setText(tr("toolbar_pause"))
+            self.btn_pause_action.setToolTip(tr("toolbar_pause_tip"))
+            self.btn_delete_action.setText(tr("toolbar_delete"))
+            self.btn_delete_action.setToolTip(tr("toolbar_delete_tip"))
+            self.btn_folder_action.setText(tr("toolbar_folder"))
+            self.btn_folder_action.setToolTip(tr("toolbar_folder_tip"))
+            self.btn_settings_action.setText(tr("toolbar_settings"))
+            self.btn_settings_action.setToolTip(tr("toolbar_settings_tip"))
+            self.search_input.setPlaceholderText(tr("toolbar_search_placeholder"))
+            self._sync_theme_button()
+
+        # Table & Sidebar
+        if hasattr(self, "table"):
+            self._update_table_headers()
+        if hasattr(self, "sidebar"):
+            current_code = self.current_filter_code
+            self._build_sidebar()
+            for i in range(self.sidebar.count()):
+                item = self.sidebar.item(i)
+                if item and item.data(Qt.UserRole) == current_code:
+                    self.sidebar.setCurrentRow(i)
+                    break
+
+        if hasattr(self, "empty_label"):
+            self.empty_label.setText(tr("empty_state_text"))
+
+        if hasattr(self, "tray") and self.tray:
+            self.tray.setToolTip(tr("tray_tooltip"))
+            if hasattr(self, "act_tray_show"):
+                self.act_tray_show.setText(tr("tray_open"))
+                self.act_tray_pause.setText(tr("tray_pause_all"))
+                self.act_tray_resume.setText(tr("tray_resume_all"))
+                self.act_tray_quit.setText(tr("tray_exit"))
+
+        self._refresh_table_data()
+        self._reload_table_full()
 
     def _open_extension_dir(self) -> None:
         ext_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "extension"))
@@ -708,16 +798,8 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
-            "Giới thiệu HDM",
-            "<h3>HDM — H2M Download Manager</h3>"
-            "<p>Trình quản lý tải file đa luồng tốc độ cao với thuật toán <b>Dynamic Segmentation</b>.</p>"
-            "<ul>"
-            "<li><b>Dynamic Work Stealing:</b> Chia động phân đoạn tải khi luồng hoàn thành sớm.</li>"
-            "<li><b>Zero-Copy Direct File Writing:</b> NTFS Sparse File, ghi trực tiếp không cần ghép tệp.</li>"
-            "<li><b>Browser Integration:</b> Tự động bắt link thông minh từ Chrome, Edge, Cốc Cốc.</li>"
-            "<li><b>Chunk Map trực quan:</b> Hiển thị tiến trình từng luồng phân đoạn theo thời gian thực.</li>"
-            "</ul>"
-            "<p>© 2026 H2M Team. Mọi quyền được bảo lưu.</p>"
+            tr("about_title"),
+            tr("about_text"),
         )
 
     def _on_search_changed(self, text: str) -> None:
@@ -805,11 +887,11 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 0, item_name)
 
             # 1. Category
-            cat_display = CATEGORY_DISPLAY.get(task.category, task.category)
+            cat_display = get_category_display(task.category)
             self.table.setItem(row, 1, QTableWidgetItem(cat_display))
 
             # 2. Size
-            size_str = format_bytes(task.total_bytes) if task.total_bytes > 0 else "Không rõ"
+            size_str = format_bytes(task.total_bytes) if task.total_bytes > 0 else "--"
             item_size = QTableWidgetItem(size_str)
             item_size.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
             self.table.setItem(row, 2, item_size)
@@ -850,7 +932,7 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 5, item_eta)
 
             # 6. Status with color badge
-            item_status = QTableWidgetItem(task.status.value)
+            item_status = QTableWidgetItem(get_status_display(task.status))
             item_status.setTextAlignment(Qt.AlignCenter)
             item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
             item_status.setFont(bold_font)
@@ -871,8 +953,12 @@ class MainWindow(QMainWindow):
         active_count = self.manager.get_active_count()
         total_count = len(self.manager.tasks)
 
-        self.lbl_speed_summary.setText(f"⬇ Tốc độ: {format_speed(total_speed)}")
-        self.lbl_tasks_summary.setText(f"📊 {active_count} đang tải / {total_count} tổng số")
+        self.lbl_speed_summary.setText(tr("status_speed", speed=format_speed(total_speed)))
+        self.lbl_tasks_summary.setText(f"📊 {active_count} {tr('sidebar_status_downloading').lower()} / {total_count}")
+        if self.config.server_enabled:
+            self.lbl_server_status.setText(tr("status_server_ready", port=self.config.server_port))
+        else:
+            self.lbl_server_status.setText(tr("status_server_disabled"))
         self._update_page_header()
 
         colors = self.palette_colors
@@ -916,7 +1002,7 @@ class MainWindow(QMainWindow):
             # Update status
             item_status = self.table.item(row, 6)
             if item_status:
-                item_status.setText(task.status.value)
+                item_status.setText(get_status_display(task.status))
                 item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
                 item_status.setFont(bold_font)
 
@@ -927,8 +1013,8 @@ class MainWindow(QMainWindow):
         # Check if completed to show balloon notification
         if task.status == TaskStatus.COMPLETED and hasattr(self, "tray") and self.tray.isVisible():
             self.tray.showMessage(
-                "HDM — Tải hoàn tất!",
-                f"Tệp {task.filename} đã được tải về thành công.",
+                "HDM",
+                f"{task.filename} ({tr('sidebar_status_completed').lower()})",
                 QSystemTrayIcon.Information,
                 3000
             )
@@ -956,45 +1042,38 @@ class MainWindow(QMainWindow):
 
         menu = QMenu(self)
 
-        act_detail = menu.addAction("🔍 Xem chi tiết & Chunk Map...")
+        act_detail = menu.addAction(f"🔍 {tr('ctx_view_details')}")
         act_detail.triggered.connect(lambda: DownloadDetailDialog(task, parent=self).exec())
 
         menu.addSeparator()
 
         if task.status in (TaskStatus.PAUSED, TaskStatus.ERROR, TaskStatus.CANCELLED):
-            act_resume = menu.addAction("▶ Tiếp tục tải")
+            act_resume = menu.addAction(f"▶ {tr('ctx_resume')}")
             act_resume.triggered.connect(lambda: self.manager.start_task(task.id))
         elif task.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.QUEUED):
-            act_pause = menu.addAction("❚❚ Tạm dừng")
+            act_pause = menu.addAction(f"❚❚ {tr('ctx_pause')}")
             act_pause.triggered.connect(lambda: self.manager.pause_task(task.id))
 
         if task.status == TaskStatus.COMPLETED:
-            act_open_file = menu.addAction("Mở tệp")
+            act_open_file = menu.addAction(tr("ctx_open_file"))
             act_open_file.triggered.connect(lambda: launch_file(task.full_path))
 
-        act_open_dir = menu.addAction("📁 Mở thư mục chứa")
+        act_open_dir = menu.addAction(f"📁 {tr('ctx_open_folder')}")
         act_open_dir.triggered.connect(lambda: open_file_in_explorer(task.full_path))
 
-        act_copy_url = menu.addAction("📋 Sao chép liên kết")
+        act_copy_url = menu.addAction(f"📋 {tr('ctx_copy_link')}")
         act_copy_url.triggered.connect(lambda: QApplication.clipboard().setText(task.url))
 
         menu.addSeparator()
 
-        act_del_file = menu.addAction("🗑 Xóa khỏi danh sách & Xóa tệp trên đĩa")
+        act_del_file = menu.addAction(f"🗑 {tr('ctx_delete')}")
         act_del_file.triggered.connect(lambda: self._confirm_delete(task, delete_file=True))
-
-        act_del = menu.addAction("Chỉ xóa khỏi danh sách (giữ tệp trên đĩa)")
-        act_del.triggered.connect(lambda: self._confirm_delete(task, delete_file=False))
 
         menu.exec(QCursor.pos())
 
     def _confirm_delete(self, task: DownloadTask, delete_file: bool = True) -> None:
-        if delete_file:
-            msg = f"Bạn có chắc muốn xóa '{task.filename}' và toàn bộ tệp trong thư mục đang chứa?"
-            title = "Xác nhận xóa tệp và tác vụ"
-        else:
-            msg = f"Bạn có chắc muốn xóa '{task.filename}' khỏi danh sách tải về (không xóa tệp trên đĩa)?"
-            title = "Xác nhận xóa khỏi danh sách"
+        msg = tr("confirm_delete_msg", filename=task.filename)
+        title = tr("confirm_delete_title")
 
         res = QMessageBox.question(self, title, msg, QMessageBox.Yes | QMessageBox.No)
         if res == QMessageBox.Yes:
