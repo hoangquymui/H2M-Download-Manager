@@ -203,6 +203,7 @@ async function handleMediaDownload(data) {
     cookies: cookies,
     user_agent: navigator.userAgent,
     format: data.format || "mp4",
+    quality: data.quality || "",
     is_video: true,
   };
 

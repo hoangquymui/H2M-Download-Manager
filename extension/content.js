@@ -97,7 +97,7 @@
     }, 4000);
   }
 
-  function triggerDownload(formatType, sourceBtn, video) {
+  function triggerDownload(formatType, qualityType, sourceBtn, video) {
     const originalHtml = sourceBtn ? sourceBtn.innerHTML : "";
     if (sourceBtn) {
       sourceBtn.classList.add("loading");
@@ -122,6 +122,7 @@
           pageUrl: pageUrl,
           title: getVideoTitle(),
           format: formatType || "mp4",
+          quality: qualityType || "",
           isStreaming: isYouTube(),
         },
       },
@@ -155,7 +156,9 @@
               sourceBtn.setAttribute("title", "Tải video này với HDM");
             }, 2500);
           }
-          showToast("✓ Đã gửi lệnh tới HDM! Vui lòng xác nhận tải trên cửa sổ HDM.", false);
+          const qText = qualityType ? (formatType === "mp3" ? `${qualityType} kbps` : `${qualityType}p`) : "";
+          const desc = formatType === "mp3" ? `MP3 ${qText}`.trim() : (qText ? `MP4 ${qText}` : "MP4");
+          showToast(`✓ Đã gửi lệnh tải (${desc}) tới HDM! Vui lòng xác nhận trên HDM.`, false);
         }
       }
     );
@@ -177,7 +180,7 @@
     // Main 28px circular button
     const btn = document.createElement("div");
     btn.className = "hdm-outside-btn";
-    btn.setAttribute("title", "Tải video này với HDM (Click để tải)");
+    btn.setAttribute("title", "Tải video với HDM (Bấm để chọn định dạng & chất lượng)");
     btn.innerHTML = SVG_DOWNLOAD_ICON;
 
     // Mini 'x' dismiss badge at top-right
@@ -186,10 +189,79 @@
     closeBtn.setAttribute("title", "Ẩn nút tải này");
     closeBtn.innerHTML = "&times;";
 
+    // Dynamic quality & format selection dropdown menu
+    const qualityMenu = document.createElement("div");
+    qualityMenu.className = "hdm-quality-menu";
+    qualityMenu.innerHTML = `
+      <div class="hdm-menu-sec">🎬 Tải Video (MP4)</div>
+      <div class="hdm-menu-item" data-format="mp4" data-quality="1080">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎬</span>
+          <span class="hdm-menu-text">MP4 1080p (Full HD / 1K)</span>
+        </div>
+        <span class="hdm-badge-q">1080p</span>
+      </div>
+      <div class="hdm-menu-item" data-format="mp4" data-quality="720">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎬</span>
+          <span class="hdm-menu-text">MP4 720p (HD)</span>
+        </div>
+        <span class="hdm-badge-q">720p</span>
+      </div>
+      <div class="hdm-menu-item" data-format="mp4" data-quality="480">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎬</span>
+          <span class="hdm-menu-text">MP4 480p (Tiêu chuẩn)</span>
+        </div>
+        <span class="hdm-badge-q">480p</span>
+      </div>
+      <div class="hdm-menu-item" data-format="mp4" data-quality="360">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎬</span>
+          <span class="hdm-menu-text">MP4 360p (Tiết kiệm)</span>
+        </div>
+        <span class="hdm-badge-q">360p</span>
+      </div>
+      <div class="hdm-menu-item" data-format="mp4" data-quality="">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">⚡</span>
+          <span class="hdm-menu-text">Tự động (Chất lượng cao nhất)</span>
+        </div>
+        <span class="hdm-badge-q auto">AUTO</span>
+      </div>
+
+      <div class="hdm-divider"></div>
+
+      <div class="hdm-menu-sec">🎵 Tải Âm Thanh (MP3)</div>
+      <div class="hdm-menu-item" data-format="mp3" data-quality="320">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎵</span>
+          <span class="hdm-menu-text">MP3 320 kbps (Cao nhất)</span>
+        </div>
+        <span class="hdm-badge-q audio">320k</span>
+      </div>
+      <div class="hdm-menu-item" data-format="mp3" data-quality="192">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎵</span>
+          <span class="hdm-menu-text">MP3 192 kbps (Chuẩn)</span>
+        </div>
+        <span class="hdm-badge-q audio">192k</span>
+      </div>
+      <div class="hdm-menu-item" data-format="mp3" data-quality="128">
+        <div class="hdm-menu-item-left">
+          <span class="hdm-menu-icon">🎵</span>
+          <span class="hdm-menu-text">MP3 128 kbps (Cơ bản)</span>
+        </div>
+        <span class="hdm-badge-q audio">128k</span>
+      </div>
+    `;
+    document.body.appendChild(qualityMenu);
+
     closeBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       container.__hdm_dismissed__ = true;
+      qualityMenu.remove();
       wrap.style.opacity = "0";
       wrap.style.transform = "scale(0.8)";
       setTimeout(() => wrap.remove(), 200);
@@ -214,46 +286,65 @@
     window.addEventListener("scroll", updatePlacement, { passive: true });
     window.addEventListener("resize", updatePlacement, { passive: true });
 
-    // Mini context menu for format selection
-    const miniMenu = document.createElement("div");
-    miniMenu.className = "hdm-mini-menu";
-    miniMenu.innerHTML = `
-      <div class="hdm-menu-item" data-format="mp4">🎬 Tải video MP4 (Chất lượng cao)</div>
-      <div class="hdm-menu-item" data-format="mp3">🎵 Tải MP3 (Chỉ âm thanh)</div>
-    `;
-    document.body.appendChild(miniMenu);
+    function toggleMenu(e) {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (qualityMenu.classList.contains("show")) {
+        qualityMenu.classList.remove("show");
+        return;
+      }
 
-    btn.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      // Close any other open menus
+      document.querySelectorAll(".hdm-quality-menu.show").forEach((m) => {
+        if (m !== qualityMenu) m.classList.remove("show");
+      });
+
+      qualityMenu.style.visibility = "hidden";
+      qualityMenu.classList.add("show");
+      const menuH = qualityMenu.offsetHeight || 310;
+      qualityMenu.style.visibility = "";
+
       const rect = btn.getBoundingClientRect();
-      miniMenu.style.top = `${rect.bottom + 6}px`;
-      miniMenu.style.left = `${Math.max(10, rect.left)}px`;
-      miniMenu.classList.add("show");
-    });
+      let top = rect.bottom + 6;
+      if (top + menuH > window.innerHeight && rect.top > menuH + 10) {
+        top = rect.top - menuH - 6;
+      }
+      qualityMenu.style.top = `${Math.max(6, top)}px`;
+      qualityMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - 270, rect.left))}px`;
+    }
 
-    miniMenu.addEventListener("click", (e) => {
+    // Left click and right click open the format/quality selector
+    btn.addEventListener("click", toggleMenu);
+    btn.addEventListener("contextmenu", toggleMenu);
+
+    qualityMenu.addEventListener("click", (e) => {
+      e.stopPropagation();
       const item = e.target.closest(".hdm-menu-item");
       if (item) {
         const fmt = item.getAttribute("data-format");
-        miniMenu.classList.remove("show");
-        triggerDownload(fmt, btn, video);
+        const q = item.getAttribute("data-quality") || "";
+        qualityMenu.classList.remove("show");
+        triggerDownload(fmt, q, btn, video);
       }
     });
 
     document.addEventListener("click", (e) => {
-      if (!miniMenu.contains(e.target) && e.target !== btn) {
-        miniMenu.classList.remove("show");
+      if (!qualityMenu.contains(e.target) && !btn.contains(e.target)) {
+        qualityMenu.classList.remove("show");
       }
     });
 
-    // Primary click triggers download
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      miniMenu.classList.remove("show");
-      triggerDownload("mp4", btn, video);
-    });
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (qualityMenu.classList.contains("show")) {
+          qualityMenu.classList.remove("show");
+        }
+      },
+      { passive: true }
+    );
 
     container.appendChild(wrap);
   }

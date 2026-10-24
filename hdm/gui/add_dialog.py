@@ -135,6 +135,7 @@ class DownloadConfirmDialog(QDialog):
         initial_filename: str = "",
         custom_headers: Optional[Dict[str, str]] = None,
         is_captured: bool = False,
+        initial_quality: str = "",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -143,6 +144,7 @@ class DownloadConfirmDialog(QDialog):
         self.initial_filename = initial_filename
         self.custom_headers = custom_headers or {}
         self.is_captured = is_captured
+        self.initial_quality = initial_quality or ""
 
         # Action selected: 'start_now', 'download_later', or 'cancel'
         self.selected_action = "start_now"
@@ -163,8 +165,16 @@ class DownloadConfirmDialog(QDialog):
         self._init_ui()
 
         # Pre-fill data if provided
+        if self.initial_quality:
+            idx = self.quality_combo.findData(self.initial_quality)
+            if idx >= 0:
+                self.quality_combo.setCurrentIndex(idx)
+
         if is_streaming_url(self.initial_url):
-            idx = self.cat_combo.findData(FileCategory.VIDEO.value)
+            if self.initial_quality in ("128", "192", "320"):
+                idx = self.cat_combo.findData(FileCategory.AUDIO.value)
+            else:
+                idx = self.cat_combo.findData(FileCategory.VIDEO.value)
             if idx >= 0:
                 self.cat_combo.setCurrentIndex(idx)
 
@@ -265,7 +275,7 @@ class DownloadConfirmDialog(QDialog):
         dir_row.addWidget(btn_browse)
         card_layout.addLayout(dir_row)
 
-        # Category & Connections Row
+        # Category, Quality & Connections Row
         opt_grid = QGridLayout()
         opt_grid.setHorizontalSpacing(14)
         opt_grid.setVerticalSpacing(4)
@@ -278,11 +288,24 @@ class DownloadConfirmDialog(QDialog):
         self.cat_combo.currentIndexChanged.connect(self._on_category_selected)
         opt_grid.addWidget(self.cat_combo, 1, 0)
 
-        opt_grid.addWidget(QLabel(tr("add_connections"), self), 0, 1)
+        opt_grid.addWidget(QLabel(tr("add_quality"), self), 0, 1)
+        self.quality_combo = QComboBox(self)
+        self.quality_combo.addItem("Mặc định (Tự động tốt nhất)", "")
+        self.quality_combo.addItem("🎬 MP4 1080p (Full HD / 1K)", "1080")
+        self.quality_combo.addItem("🎬 MP4 720p (HD)", "720")
+        self.quality_combo.addItem("🎬 MP4 480p (Tiêu chuẩn)", "480")
+        self.quality_combo.addItem("🎬 MP4 360p (Tiết kiệm)", "360")
+        self.quality_combo.addItem("🎵 MP3 320 kbps (Cao nhất)", "320")
+        self.quality_combo.addItem("🎵 MP3 192 kbps (Chuẩn)", "192")
+        self.quality_combo.addItem("🎵 MP3 128 kbps (Cơ bản)", "128")
+        self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
+        opt_grid.addWidget(self.quality_combo, 1, 1)
+
+        opt_grid.addWidget(QLabel(tr("add_connections"), self), 0, 2)
         self.conn_spin = QSpinBox(self)
         self.conn_spin.setRange(1, 32)
         self.conn_spin.setValue(self.config.default_connections)
-        opt_grid.addWidget(self.conn_spin, 1, 1)
+        opt_grid.addWidget(self.conn_spin, 1, 2)
 
         card_layout.addLayout(opt_grid)
         layout.addWidget(card)
@@ -315,7 +338,15 @@ class DownloadConfirmDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _sync_category_from_filename(self, filename: str) -> None:
-        cat = get_category_for_filename(filename)
+        url = self.url_input.text().strip() if hasattr(self, "url_input") else ""
+        quality = self.quality_combo.currentData() if hasattr(self, "quality_combo") else ""
+        if quality in ("128", "192", "320") or (filename and filename.lower().endswith(".mp3")):
+            cat = FileCategory.AUDIO
+        elif is_streaming_url(url) or quality in ("1080", "720", "480", "360"):
+            cat = FileCategory.VIDEO
+        else:
+            cat = get_category_for_filename(filename)
+
         idx = self.cat_combo.findData(cat.value)
         if idx >= 0 and idx != self.cat_combo.currentIndex():
             self.cat_combo.blockSignals(True)
@@ -349,6 +380,31 @@ class DownloadConfirmDialog(QDialog):
             except Exception:
                 pass
 
+    def _on_quality_changed(self, idx: int) -> None:
+        quality = self.quality_combo.currentData() or ""
+        curr_fn = self.filename_input.text().strip()
+
+        if quality in ("128", "192", "320"):
+            cat_idx = self.cat_combo.findData(FileCategory.AUDIO.value)
+            if cat_idx >= 0:
+                self.cat_combo.blockSignals(True)
+                self.cat_combo.setCurrentIndex(cat_idx)
+                self.cat_combo.blockSignals(False)
+            if curr_fn:
+                name_root, ext = os.path.splitext(curr_fn)
+                if ext.lower() in (".mp4", ".mkv", ".webm", ".flv", ".avi", ""):
+                    self.filename_input.setText(f"{name_root}.mp3")
+        elif quality in ("1080", "720", "480", "360"):
+            cat_idx = self.cat_combo.findData(FileCategory.VIDEO.value)
+            if cat_idx >= 0:
+                self.cat_combo.blockSignals(True)
+                self.cat_combo.setCurrentIndex(cat_idx)
+                self.cat_combo.blockSignals(False)
+            if curr_fn:
+                name_root, ext = os.path.splitext(curr_fn)
+                if ext.lower() in (".mp3", ".m4a", ".aac", ".wav", ".flac", ""):
+                    self.filename_input.setText(f"{name_root}.mp4")
+
     def _on_probe_clicked(self) -> None:
         url = self.url_input.text().strip()
         if not url:
@@ -378,6 +434,13 @@ class DownloadConfirmDialog(QDialog):
         curr_text = self.filename_input.text().strip()
         is_generic = not curr_text or curr_text in ("watch", "watch.html", "index.html", "download", "videoplayback")
         if filename and (is_generic or is_streaming_url(self.url_input.text().strip())):
+            quality = self.quality_combo.currentData() or ""
+            if quality in ("128", "192", "320"):
+                name_root, _ = os.path.splitext(filename)
+                filename = f"{name_root}.mp3"
+            elif quality in ("1080", "720", "480", "360"):
+                name_root, _ = os.path.splitext(filename)
+                filename = f"{name_root}.mp4"
             self.filename_input.setText(filename)
             self._sync_category_from_filename(filename)
 
@@ -465,6 +528,7 @@ class DownloadConfirmDialog(QDialog):
             "category": self.cat_combo.currentData(),
             "connections": self.conn_spin.value(),
             "headers": self.custom_headers,
+            "quality": self.quality_combo.currentData() or "",
             "auto_start": (self.selected_action == "start_now"),
             "action": self.selected_action,
         }

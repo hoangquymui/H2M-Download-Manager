@@ -280,9 +280,16 @@ class DownloadEngine:
         ]
         ffmpeg_bin = next((p for p in ffmpeg_paths if p and os.path.exists(p)), None)
 
-        is_audio_only = bool(self.task.filename and self.task.filename.lower().endswith(".mp3"))
+        quality = getattr(self.task, "quality", "") or ""
+        is_audio_only = bool(
+            (self.task.filename and self.task.filename.lower().endswith(".mp3"))
+            or quality in ("128", "192", "320")
+        )
+
         if is_audio_only:
             format_spec = "bestaudio/best"
+        elif quality in ("1080", "720", "480", "360", "240", "144"):
+            format_spec = f"bestvideo[height<={quality}]+bestaudio/bestvideo+bestaudio/best[height<={quality}]/best"
         else:
             format_spec = "bestvideo+bestaudio/bestvideo/bestaudio/best"
 
@@ -297,7 +304,13 @@ class DownloadEngine:
         }
         if ffmpeg_bin:
             ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_bin)
-            if not is_audio_only:
+            if is_audio_only:
+                ydl_opts["postprocessors"] = [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": quality if quality in ("128", "192", "320") else "128",
+                }]
+            else:
                 ydl_opts["merge_output_format"] = "mp4"
 
         if self.task.headers:

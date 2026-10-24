@@ -116,6 +116,7 @@ class DownloadQueueManager:
         headers: Optional[Dict[str, str]] = None,
         connections: Optional[int] = None,
         auto_start: Optional[bool] = None,
+        quality: Optional[str] = None,
     ) -> DownloadTask:
         """Create and queue a new download task."""
         if not filename:
@@ -146,6 +147,7 @@ class DownloadQueueManager:
             headers=headers or {"User-Agent": self.config.user_agent},
             num_connections=connections,
             category=category.value,
+            quality=quality or "",
             status=TaskStatus.QUEUED if should_start else TaskStatus.PAUSED,
         )
 

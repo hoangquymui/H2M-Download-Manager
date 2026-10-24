@@ -138,6 +138,7 @@ class BrowserIntegrationServer:
                     if "cookies" in payload:
                         custom_headers["Cookie"] = payload["cookies"]
 
+                    quality = payload.get("quality", "")
                     show_dialog = True
                     if self.config_manager and hasattr(self.config_manager, "config"):
                         show_dialog = getattr(self.config_manager.config, "show_download_dialog", True)
@@ -147,6 +148,7 @@ class BrowserIntegrationServer:
                             "url": url,
                             "filename": filename or "",
                             "headers": custom_headers,
+                            "quality": quality,
                         }
                         self.on_download_requested(req_data)
                         self._send_json(writer, {"ok": True, "mode": "dialog"})
@@ -156,6 +158,7 @@ class BrowserIntegrationServer:
                             filename=filename,
                             headers=custom_headers if custom_headers else None,
                             auto_start=True,
+                            quality=quality,
                         )
                         self._send_json(writer, {"ok": True, "task_id": task.id})
                 except Exception as e:

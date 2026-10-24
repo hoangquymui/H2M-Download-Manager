@@ -706,6 +706,7 @@ class MainWindow(QMainWindow):
         filename = data.get("filename", "")
         headers = data.get("headers", {})
         is_captured = data.get("is_captured", True)
+        quality = data.get("quality", "")
 
         self.show_and_raise()
 
@@ -715,6 +716,7 @@ class MainWindow(QMainWindow):
             initial_filename=filename,
             custom_headers=headers,
             is_captured=is_captured,
+            initial_quality=quality,
             parent=self,
         )
         if dlg.exec():
@@ -726,6 +728,7 @@ class MainWindow(QMainWindow):
                 headers=res.get("headers"),
                 connections=res["connections"],
                 auto_start=res["auto_start"],
+                quality=res.get("quality", ""),
             )
             self.show_and_raise()
 
