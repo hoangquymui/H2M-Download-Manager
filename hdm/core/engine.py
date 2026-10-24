@@ -23,6 +23,7 @@ logger = logging.getLogger("HDM.Engine")
 MIN_CHUNK_SIZE = 1048576       # 1 MB
 MIN_STEAL_SIZE = 2097152       # 2 MB minimum remaining to split in half
 READ_BUFFER_SIZE = 65536       # 64 KB read buffer
+MAX_CHUNK_RETRIES = 5          # give up on a segment after this many failures
 
 
 class DownloadEngine:
@@ -44,6 +45,7 @@ class DownloadEngine:
         self._write_lock = asyncio.Lock()
 
         self._file_handle: Optional[Any] = None
+        self._fail_counts: Dict[int, int] = {}
         self._last_speed_check_time = time.time()
         self._last_downloaded_bytes = 0
 
@@ -85,6 +87,10 @@ class DownloadEngine:
                 range_headers = dict(headers)
                 range_headers["Range"] = "bytes=0-0"
                 get_resp = await client.get(self.task.url, headers=range_headers, follow_redirects=True, timeout=15.0)
+                if get_resp.status_code >= 400 and not probe_success:
+                    self.task.error_message = f"Máy chủ trả về lỗi HTTP {get_resp.status_code}"
+                    self.task.status = TaskStatus.ERROR
+                    return False
                 if get_resp.status_code in (200, 206):
                     self._extract_metadata(get_resp)
                     if get_resp.status_code == 206:
@@ -307,7 +313,10 @@ class DownloadEngine:
                 self.task.status = TaskStatus.COMPLETED
                 self.task.speed = 0.0
                 self.task.completed_at = time.time()
-                self.task.downloaded_bytes = self.task.total_bytes if self.task.total_bytes > 0 else self.task.downloaded_bytes
+                if self.task.total_bytes <= 0:
+                    # Unknown-size stream: real size is whatever we received
+                    self.task.total_bytes = sum(c.downloaded_bytes for c in self.task.chunks)
+                self.task.downloaded_bytes = self.task.total_bytes
 
                 # Clean up .hdm_meta file
                 if os.path.exists(self.task.meta_path):
@@ -373,13 +382,16 @@ class DownloadEngine:
         """Find and claim a chunk that is pending or needs retry."""
         async with self._chunks_lock:
             # Priority 1: Pending chunks
+            # (end_byte < 0 means unknown size: single stream until EOF)
             for c in self.task.chunks:
-                if c.status == "pending" and c.remaining_bytes > 0:
+                if c.status == "pending" and (c.remaining_bytes > 0 or c.end_byte < 0):
                     c.status = "downloading"
                     return c
-            # Priority 2: Failed chunks for automatic retry
+            # Priority 2: Failed chunks for automatic retry (bounded)
             for c in self.task.chunks:
-                if c.status == "failed" and c.remaining_bytes > 0:
+                if c.status == "failed" and (c.remaining_bytes > 0 or c.end_byte < 0):
+                    if self._fail_counts.get(c.chunk_id, 0) >= MAX_CHUNK_RETRIES:
+                        continue
                     c.status = "downloading"
                     return c
         return None
@@ -422,20 +434,41 @@ class DownloadEngine:
 
             return new_chunk
 
+    def _register_failure(self, chunk: Chunk, reason: str) -> None:
+        """Mark chunk failed; after MAX_CHUNK_RETRIES the whole task becomes ERROR."""
+        chunk.status = "failed"
+        count = self._fail_counts.get(chunk.chunk_id, 0) + 1
+        self._fail_counts[chunk.chunk_id] = count
+        if count >= MAX_CHUNK_RETRIES:
+            self.task.error_message = f"Tải thất bại sau {count} lần thử ({reason})"
+            self.task.status = TaskStatus.ERROR
+
     async def _download_chunk(self, client: httpx.AsyncClient, chunk: Chunk) -> None:
         """Download assigned byte range and write directly to file."""
         headers = dict(self.task.headers)
         if self.task.supports_range and chunk.end_byte >= chunk.current_pos:
             headers["Range"] = f"bytes={chunk.current_pos}-{chunk.end_byte}"
+        elif not self.task.supports_range:
+            # Server ignores Range: a retry must restart the stream from byte 0
+            chunk.current_pos = chunk.start_byte
+            if self._file_handle:
+                async with self._write_lock:
+                    self._file_handle.seek(0)
+                    self._file_handle.truncate()
 
         chunk.status = "downloading"
         chunk_last_time = time.time()
         chunk_last_bytes = chunk.downloaded_bytes
 
+        # Backoff before retrying to avoid hammering servers during network glitches
+        fail_count = self._fail_counts.get(chunk.chunk_id, 0)
+        if fail_count > 0:
+            await asyncio.sleep(min(0.5 * fail_count, 2.5))
+
         try:
             async with client.stream("GET", self.task.url, headers=headers) as resp:
                 if resp.status_code not in (200, 206):
-                    chunk.status = "failed"
+                    self._register_failure(chunk, f"HTTP {resp.status_code}")
                     return
 
                 async for block in resp.aiter_bytes(chunk_size=READ_BUFFER_SIZE):
@@ -473,12 +506,12 @@ class DownloadEngine:
                     chunk.status = "completed"
                     chunk.speed = 0.0
                 elif not self._pause_requested.is_set() and not self._cancel_requested.is_set():
-                    chunk.status = "failed"
+                    self._register_failure(chunk, "kết nối bị ngắt giữa chừng")
 
         except Exception as e:
             logger.debug(f"Chunk {chunk.chunk_id} download error: {e}")
             if not self._pause_requested.is_set():
-                chunk.status = "failed"
+                self._register_failure(chunk, f"{type(e).__name__}: {e}")
         finally:
             if self.on_chunk_update:
                 self.on_chunk_update(self.task)
