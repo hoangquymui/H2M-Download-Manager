@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from hdm.core.config import Config
+from hdm.core.engine import is_streaming_url
 from hdm.core.sparse_file import check_free_space
 from hdm.gui.icons import get_icon
 from hdm.gui.style import get_palette
@@ -53,6 +54,33 @@ class ProbeWorker(QThread):
         self.custom_headers = custom_headers or {}
 
     def run(self) -> None:
+        if is_streaming_url(self.url):
+            try:
+                import yt_dlp
+                from hdm.utils.formatters import clean_filename
+
+                ydl_opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "nocheckcertificate": True,
+                    "noplaylist": True,
+                }
+                if self.custom_headers:
+                    ydl_opts["http_headers"] = self.custom_headers
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(self.url, download=False)
+                    title = info.get("title", "")
+                    clean_t = clean_filename(title) if title else "video"
+                    ext = info.get("ext", "mp4")
+                    filename = f"{clean_t}.{ext}"
+                    total_bytes = info.get("filesize") or info.get("filesize_approx") or -1
+                    self.finished_signal.emit(filename, total_bytes, True)
+                    return
+            except Exception as e:
+                # Fallback to standard HTTP probe if yt-dlp probe fails
+                pass
+
         try:
             headers = {"User-Agent": self.user_agent}
             headers.update(self.custom_headers)
@@ -129,6 +157,11 @@ class DownloadConfirmDialog(QDialog):
         self._init_ui()
 
         # Pre-fill data if provided
+        if is_streaming_url(self.initial_url):
+            idx = self.cat_combo.findData(FileCategory.VIDEO.value)
+            if idx >= 0:
+                self.cat_combo.setCurrentIndex(idx)
+
         if self.initial_filename:
             self.filename_input.setText(self.initial_filename)
             self._sync_category_from_filename(self.initial_filename)
@@ -336,7 +369,9 @@ class DownloadConfirmDialog(QDialog):
         self.btn_probe.setEnabled(True)
         self.btn_probe.setText(tr("add_btn_check"))
 
-        if filename and not self.filename_input.text():
+        curr_text = self.filename_input.text().strip()
+        is_generic = not curr_text or curr_text in ("watch", "watch.html", "index.html", "download", "videoplayback")
+        if filename and (is_generic or is_streaming_url(self.url_input.text().strip())):
             self.filename_input.setText(filename)
             self._sync_category_from_filename(filename)
 

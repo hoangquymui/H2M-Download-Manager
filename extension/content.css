@@ -1,0 +1,194 @@
+/**
+ * HDM Browser Extension - Floating Video Download Panel Stylesheet (IDM Style)
+ */
+
+.hdm-video-panel {
+  position: absolute !important;
+  top: 14px !important;
+  right: 14px !important;
+  z-index: 2147483647 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+  color: #ffffff !important;
+  pointer-events: auto !important;
+  user-select: none !important;
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  opacity: 0.95;
+}
+
+.hdm-video-panel:hover {
+  opacity: 1 !important;
+}
+
+/* Compact pill container */
+.hdm-panel-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  background: rgba(15, 23, 42, 0.92) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 20px !important;
+  padding: 5px 10px 5px 8px !important;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+  cursor: pointer !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.hdm-panel-pill:hover {
+  background: rgba(30, 41, 59, 0.98) !important;
+  border-color: #3b82f6 !important;
+  box-shadow: 0 6px 24px rgba(37, 99, 235, 0.35), 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+  transform: translateY(-1px) !important;
+}
+
+/* HDM Logo Icon */
+.hdm-icon {
+  width: 18px !important;
+  height: 18px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+}
+
+.hdm-icon svg {
+  width: 16px !important;
+  height: 16px !important;
+  fill: none !important;
+  stroke: #60a5fa !important;
+  stroke-width: 2.2 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+}
+
+/* Label text */
+.hdm-label {
+  font-weight: 600 !important;
+  color: #f8fafc !important;
+  white-space: nowrap !important;
+  letter-spacing: 0.2px !important;
+}
+
+/* Quality / format badge */
+.hdm-badge {
+  background: rgba(59, 130, 246, 0.35) !important;
+  color: #93c5fd !important;
+  border: 1px solid rgba(147, 197, 253, 0.3) !important;
+  border-radius: 6px !important;
+  padding: 1px 5px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+}
+
+/* Dropdown arrow toggle */
+.hdm-arrow {
+  width: 14px !important;
+  height: 14px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: #94a3b8 !important;
+  margin-left: 2px !important;
+  transition: transform 0.2s ease !important;
+}
+
+.hdm-video-panel.open .hdm-arrow {
+  transform: rotate(180deg) !important;
+}
+
+/* Close button (x) */
+.hdm-close-btn {
+  width: 16px !important;
+  height: 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: #64748b !important;
+  font-size: 13px !important;
+  border-radius: 50% !important;
+  margin-left: 2px !important;
+  transition: color 0.15s, background-color 0.15s !important;
+}
+
+.hdm-close-btn:hover {
+  color: #ef4444 !important;
+  background-color: rgba(239, 68, 68, 0.15) !important;
+}
+
+/* Dropdown menu */
+.hdm-dropdown {
+  display: none !important;
+  position: absolute !important;
+  top: 100% !important;
+  right: 0 !important;
+  margin-top: 6px !important;
+  min-width: 220px !important;
+  background: rgba(15, 23, 42, 0.96) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-radius: 12px !important;
+  padding: 6px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6) !important;
+  flex-direction: column !important;
+  gap: 3px !important;
+}
+
+.hdm-video-panel.open .hdm-dropdown {
+  display: flex !important;
+}
+
+.hdm-dropdown-item {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  padding: 8px 12px !important;
+  border-radius: 8px !important;
+  color: #e2e8f0 !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  transition: background-color 0.15s, color 0.15s !important;
+  text-decoration: none !important;
+}
+
+.hdm-dropdown-item:hover {
+  background-color: #2563eb !important;
+  color: #ffffff !important;
+}
+
+.hdm-item-title {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-size: 11.5px !important;
+}
+
+.hdm-item-badge {
+  font-size: 9.5px !important;
+  font-weight: 700 !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+}
+
+/* Idle / collapsed state when video is playing undisturbed */
+.hdm-video-panel.idle {
+  opacity: 0.35 !important;
+  transform: scale(0.92) !important;
+}
+
+.hdm-video-panel.idle:hover {
+  opacity: 1 !important;
+  transform: scale(1) !important;
+}
+
+/* Success notification ripple */
+.hdm-panel-pill.success {
+  background: #059669 !important;
+  border-color: #10b981 !important;
+}

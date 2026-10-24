@@ -4,6 +4,7 @@
 
 const statusBadge = document.getElementById("status-badge");
 const chkIntercept = document.getElementById("chk-intercept");
+const chkVideoPanel = document.getElementById("chk-video-panel");
 const activeTasksEl = document.getElementById("active-tasks");
 const totalSpeedEl = document.getElementById("total-speed");
 const btnOpenHdm = document.getElementById("btn-open-hdm");
@@ -17,8 +18,17 @@ function formatSpeed(bytesPerSec) {
 
 async function init() {
   // Load settings
-  const settings = await chrome.storage.local.get({ autoIntercept: true });
+  const settings = await chrome.storage.local.get({
+    autoIntercept: true,
+    enableVideoPanel: true,
+  });
   chkIntercept.checked = settings.autoIntercept;
+  if (chkVideoPanel) {
+    chkVideoPanel.checked = settings.enableVideoPanel;
+    chkVideoPanel.addEventListener("change", async () => {
+      await chrome.storage.local.set({ enableVideoPanel: chkVideoPanel.checked });
+    });
+  }
 
   chkIntercept.addEventListener("change", async () => {
     await chrome.storage.local.set({ autoIntercept: chkIntercept.checked });

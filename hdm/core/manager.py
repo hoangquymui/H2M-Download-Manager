@@ -12,9 +12,9 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from hdm.core.config import ConfigManager
-from hdm.core.engine import DownloadEngine
+from hdm.core.engine import DownloadEngine, is_streaming_url
 from hdm.core.models import DownloadTask, TaskStatus
-from hdm.utils.category import get_category_for_filename, get_category_subfolder
+from hdm.utils.category import FileCategory, get_category_for_filename, get_category_subfolder
 from hdm.utils.formatters import clean_filename, extract_filename_from_url
 from hdm.utils.system import get_app_data_folder
 
@@ -122,7 +122,10 @@ class DownloadQueueManager:
             filename = extract_filename_from_url(url)
         filename = clean_filename(filename)
 
-        category = get_category_for_filename(filename)
+        if is_streaming_url(url):
+            category = FileCategory.VIDEO
+        else:
+            category = get_category_for_filename(filename)
 
         if not save_dir:
             save_dir = self.config.default_save_dir

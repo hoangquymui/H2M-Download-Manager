@@ -173,13 +173,54 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-// Listen to popup messages
+function sanitizeFilename(name) {
+  return (name || "video")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function handleMediaDownload(data) {
+  const targetUrl = data.url || data.pageUrl;
+  const cookies = await getCookiesForUrl(targetUrl);
+  const ext = data.format === "mp3" ? "mp3" : "mp4";
+  const filename = data.title ? `${sanitizeFilename(data.title)}.${ext}` : "";
+
+  const payload = {
+    url: targetUrl,
+    filename: filename,
+    referer: data.pageUrl || "",
+    cookies: cookies,
+    user_agent: navigator.userAgent,
+    format: data.format || "mp4",
+    is_video: true,
+  };
+
+  const res = await sendToHDM(payload);
+  if (res && res.ok) {
+    showHDMWindow();
+    return { ok: true };
+  } else {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: "HDM Download Manager",
+      message: "Không thể kết nối với ứng dụng HDM. Vui lòng mở HDM trên máy tính của bạn.",
+    });
+    return { ok: false, error: "Cannot connect to HDM" };
+  }
+}
+
+// Listen to popup and content script messages
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === "ping") {
     pingHDM().then(sendResponse);
     return true;
   } else if (req.action === "show_hdm") {
     showHDMWindow().then(() => sendResponse({ ok: true }));
+    return true;
+  } else if (req.action === "download_media") {
+    handleMediaDownload(req.data).then(sendResponse);
     return true;
   }
 });

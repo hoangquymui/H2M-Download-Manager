@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "HDM — H2M Download Manager",
   "short_name": "HDM",
-  "version": "1.0.0",
-  "description": "Tiện ích tự động bắt liên kết tải và truyền sang ứng dụng HDM đa luồng siêu tốc.",
+  "version": "1.1.0",
+  "description": "Tiện ích tự động bắt liên kết tải và nút tải video trực tiếp trên YouTube và các trang web cho HDM.",
   "permissions": [
     "downloads",
     "storage",
@@ -17,6 +17,15 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
   "action": {
     "default_title": "HDM Download Manager",
     "default_popup": "popup.html",

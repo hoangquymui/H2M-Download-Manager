@@ -25,6 +25,31 @@ MIN_STEAL_SIZE = 2097152       # 2 MB minimum remaining to split in half
 READ_BUFFER_SIZE = 65536       # 64 KB read buffer
 MAX_CHUNK_RETRIES = 5          # give up on a segment after this many failures
 
+STREAMING_DOMAINS = (
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+    "facebook.com/watch",
+    "facebook.com/reel",
+    "fb.watch",
+    "instagram.com",
+    "twitter.com",
+    "x.com",
+    "vimeo.com",
+    "dailymotion.com",
+    "bilibili.com",
+    "twitch.tv",
+    "soundcloud.com",
+)
+
+
+def is_streaming_url(url: str) -> bool:
+    """Check if the URL belongs to a streaming service supported by yt-dlp."""
+    if not url:
+        return False
+    u = url.lower()
+    return any(d in u for d in STREAMING_DOMAINS)
+
 
 class DownloadEngine:
     """Core download engine handling dynamic segmentation, streaming, and resume."""
@@ -64,10 +89,43 @@ class DownloadEngine:
             self._file_handle = None
 
     async def probe(self, client: httpx.AsyncClient) -> bool:
-        """Inspect the URL with HEAD / GET Range probe to determine size, Range support, and filename."""
+        """Inspect the URL with HEAD / GET Range probe, or yt_dlp for streaming video."""
         self.task.status = TaskStatus.CONNECTING
         if self.on_progress:
             self.on_progress(self.task)
+
+        # Check if URL is from a streaming video site (YouTube, Facebook, TikTok, etc.)
+        if is_streaming_url(self.task.url):
+            try:
+                import yt_dlp
+
+                def extract():
+                    ydl_opts = {
+                        "quiet": True,
+                        "no_warnings": True,
+                        "skip_download": True,
+                        "nocheckcertificate": True,
+                        "noplaylist": True,
+                    }
+                    if self.task.headers:
+                        ydl_opts["http_headers"] = dict(self.task.headers)
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        return ydl.extract_info(self.task.url, download=False)
+
+                info = await asyncio.to_thread(extract)
+                if info:
+                    title = info.get("title", "")
+                    from hdm.utils.formatters import clean_filename
+                    ext = info.get("ext", "mp4")
+                    if not self.task.filename or self.task.filename.startswith("watch"):
+                        clean_t = clean_filename(title) if title else "video"
+                        self.task.filename = f"{clean_t}.{ext}"
+
+                    self.task.total_bytes = info.get("filesize") or info.get("filesize_approx") or 0
+                    self.task.supports_range = True
+                    return True
+            except Exception as e:
+                logger.debug(f"yt_dlp streaming probe exception: {e}")
 
         headers = dict(self.task.headers)
         probe_success = False
@@ -174,10 +232,119 @@ class DownloadEngine:
             logger.warning(f"Failed to load metadata: {e}")
         return False
 
+    async def _download_streaming_video(self) -> bool:
+        """Download streaming media from YouTube, Facebook, TikTok, etc. using yt_dlp."""
+        import yt_dlp
+        from hdm.utils.formatters import clean_filename
+
+        self.task.status = TaskStatus.DOWNLOADING
+        if self.on_progress:
+            self.on_progress(self.task)
+
+        os.makedirs(self.task.save_dir, exist_ok=True)
+        base_name = os.path.splitext(self.task.filename)[0] if self.task.filename else "video"
+        base_name = clean_filename(base_name)
+        out_pattern = os.path.join(self.task.save_dir, f"{base_name}.%(ext)s")
+
+        def progress_hook(d):
+            if self._cancel_requested.is_set():
+                raise Exception("Tác vụ đã bị hủy bởi người dùng")
+            if self._pause_requested.is_set():
+                raise Exception("Tác vụ đã tạm dừng")
+
+            if d["status"] == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                downloaded = d.get("downloaded_bytes", 0)
+                speed = d.get("speed") or 0.0
+
+                if total > 0:
+                    self.task.total_bytes = total
+                self.task.downloaded_bytes = downloaded
+                self.task.speed = speed
+                if self.on_progress:
+                    self.on_progress(self.task)
+
+            elif d["status"] == "finished":
+                if self.task.total_bytes > 0:
+                    self.task.downloaded_bytes = self.task.total_bytes
+                self.task.speed = 0.0
+                if self.on_progress:
+                    self.on_progress(self.task)
+
+        ydl_opts = {
+            "format": "best[ext=mp4]/best",
+            "outtmpl": out_pattern,
+            "progress_hooks": [progress_hook],
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "noplaylist": True,
+        }
+        if self.task.headers:
+            ydl_opts["http_headers"] = dict(self.task.headers)
+
+        try:
+            def do_dl():
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    return ydl.extract_info(self.task.url, download=True)
+
+            info = await asyncio.to_thread(do_dl)
+
+            # Locate downloaded file
+            final_path = None
+            if info and "requested_downloads" in info:
+                for rd in info["requested_downloads"]:
+                    p = rd.get("filepath")
+                    if p and os.path.exists(p):
+                        final_path = p
+                        break
+            if not final_path and info and "_filename" in info and os.path.exists(info["_filename"]):
+                final_path = info["_filename"]
+
+            if not final_path:
+                for ext in [".mp4", ".webm", ".mkv", ".m4a", ".mp3"]:
+                    cand = os.path.join(self.task.save_dir, f"{base_name}{ext}")
+                    if os.path.exists(cand):
+                        final_path = cand
+                        break
+
+            if final_path and os.path.exists(final_path):
+                self.task.filename = os.path.basename(final_path)
+                self.task.total_bytes = os.path.getsize(final_path)
+                self.task.downloaded_bytes = self.task.total_bytes
+                self.task.status = TaskStatus.COMPLETED
+                self.task.speed = 0.0
+                self.task.completed_at = time.time()
+                if self.on_progress:
+                    self.on_progress(self.task)
+                return True
+            else:
+                self.task.status = TaskStatus.ERROR
+                self.task.error_message = "Không tìm thấy tệp sau khi tải video"
+                if self.on_progress:
+                    self.on_progress(self.task)
+                return False
+
+        except Exception as e:
+            if self._cancel_requested.is_set():
+                self.task.status = TaskStatus.CANCELLED
+            elif self._pause_requested.is_set():
+                self.task.status = TaskStatus.PAUSED
+            else:
+                self.task.status = TaskStatus.ERROR
+                self.task.error_message = f"Lỗi tải video: {e}"
+            if self.on_progress:
+                self.on_progress(self.task)
+            return False
+
     async def run(self) -> bool:
         """Execute the download process."""
         self._pause_requested.clear()
         self._cancel_requested.clear()
+
+        # Route streaming video platforms (YouTube, Facebook, etc.) to yt_dlp
+        if is_streaming_url(self.task.url):
+            return await self._download_streaming_video()
 
         timeout = httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=30.0)
         limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
