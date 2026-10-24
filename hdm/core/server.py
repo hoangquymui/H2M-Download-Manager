@@ -173,6 +173,10 @@ class BrowserIntegrationServer:
             logger.debug(f"HTTP Server client handling error: {e}")
         finally:
             try:
+                await writer.drain()
+            except Exception:
+                pass
+            try:
                 writer.close()
                 await writer.wait_closed()
             except Exception:
@@ -211,7 +215,8 @@ class BrowserIntegrationServer:
             f"Content-Length: {len(body_bytes)}",
             "Access-Control-Allow-Origin: *",
             "Access-Control-Allow-Methods: GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers: Content-Type, X-HDM-Client, Authorization",
+            "Access-Control-Allow-Headers: Content-Type, X-HDM-Client, Authorization, Access-Control-Request-Private-Network, *",
+            "Access-Control-Allow-Private-Network: true",
             "Connection: close",
             "",
             "",

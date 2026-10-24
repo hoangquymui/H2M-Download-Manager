@@ -3,7 +3,7 @@
  * Intercepts downloads and communicates with HDM desktop server at 127.0.0.1:9618
  */
 
-const HDM_URL = "http://127.0.0.1:9618";
+const HDM_URLS = ["http://127.0.0.1:9618", "http://localhost:9618"];
 
 // Cache processed downloads to avoid re-interception loops
 const processedDownloads = new Set();
@@ -12,49 +12,59 @@ const processedDownloads = new Set();
  * Check if HDM desktop app is currently running.
  */
 async function pingHDM() {
-  try {
-    const res = await fetch(`${HDM_URL}/api/v1/status`, {
-      method: "GET",
-      headers: { "X-HDM-Client": "extension" },
-      signal: AbortSignal.timeout(1500),
-    });
-    return res.ok ? await res.json() : null;
-  } catch (e) {
-    return null;
+  for (const baseUrl of HDM_URLS) {
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/status`, {
+        method: "GET",
+        headers: { "X-HDM-Client": "extension" },
+        signal: AbortSignal.timeout(1500),
+      });
+      if (res && res.ok) return await res.json();
+    } catch (e) {
+      // try next
+    }
   }
+  return null;
 }
 
 /**
  * Send download request to HDM desktop application.
  */
 async function sendToHDM(data) {
-  try {
-    const res = await fetch(`${HDM_URL}/api/v1/download`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-HDM-Client": "extension",
-      },
-      body: JSON.stringify(data),
-      signal: AbortSignal.timeout(8000),
-    });
-    return res.ok ? await res.json() : null;
-  } catch (e) {
-    return null;
+  for (const baseUrl of HDM_URLS) {
+    try {
+      const res = await fetch(`${baseUrl}/api/v1/download`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-HDM-Client": "extension",
+        },
+        body: JSON.stringify(data),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res && res.ok) return await res.json();
+    } catch (e) {
+      // try next
+    }
   }
+  return null;
 }
 
 /**
  * Request HDM to bring its window to the foreground.
  */
 async function showHDMWindow() {
-  try {
-    await fetch(`${HDM_URL}/api/v1/show`, {
-      method: "POST",
-      headers: { "X-HDM-Client": "extension" },
-    });
-  } catch (e) {
-    // Ignore error
+  for (const baseUrl of HDM_URLS) {
+    try {
+      await fetch(`${baseUrl}/api/v1/show`, {
+        method: "POST",
+        headers: { "X-HDM-Client": "extension" },
+        signal: AbortSignal.timeout(1500),
+      });
+      break;
+    } catch (e) {
+      // Ignore error
+    }
   }
 }
 

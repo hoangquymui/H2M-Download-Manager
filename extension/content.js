@@ -228,7 +228,7 @@
       e.stopPropagation();
       const rect = btn.getBoundingClientRect();
       miniMenu.style.top = `${rect.bottom + 6}px`;
-      miniMenu.style.left = `${Math.max(10, rect.right - 220)}px`;
+      miniMenu.style.left = `${Math.max(10, rect.left)}px`;
       miniMenu.classList.add("show");
     });
 

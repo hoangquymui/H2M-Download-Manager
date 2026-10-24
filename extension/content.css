@@ -14,17 +14,19 @@
   transition: opacity 0.2s ease, transform 0.2s ease !important;
 }
 
-/* Positioned cleanly above the top-right corner of the video */
+/* Positioned cleanly above the top-left corner of the video */
 .hdm-btn-wrap.hdm-pos-top {
   top: -36px !important;
-  right: 8px !important;
+  left: 8px !important;
+  right: auto !important;
   bottom: auto !important;
 }
 
-/* Positioned cleanly below the bottom-right corner when space above is restricted */
+/* Positioned cleanly below the bottom-left corner when space above is restricted */
 .hdm-btn-wrap.hdm-pos-bottom {
   top: calc(100% + 8px) !important;
-  right: 8px !important;
+  left: 8px !important;
+  right: auto !important;
   bottom: auto !important;
 }
 
