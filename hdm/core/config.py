@@ -33,6 +33,7 @@ class Config:
     user_agent: str = DEFAULT_USER_AGENT
     theme: str = "dark"
     language: str = "vi"                # "vi" or "en"
+    start_with_windows: bool = False    # Auto-start with Windows on boot
     speed_limit_kbps: int = 0           # 0 = unlimited
 
     def to_dict(self) -> Dict[str, Any]:
@@ -71,6 +72,11 @@ class ConfigManager:
         if config is not None:
             self.config = config
         set_language(self.config.language)
+        try:
+            from hdm.utils.system import set_autostart
+            set_autostart(self.config.start_with_windows)
+        except Exception:
+            pass
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 json.dump(self.config.to_dict(), f, indent=2, ensure_ascii=False)

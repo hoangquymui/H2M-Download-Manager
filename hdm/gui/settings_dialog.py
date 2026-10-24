@@ -88,6 +88,10 @@ class SettingsDialog(QDialog):
         self.chk_autostart.setChecked(self.config.auto_start)
         grid_storage.addWidget(self.chk_autostart, 4, 0, 1, 2)
 
+        self.chk_start_with_windows = QCheckBox(tr("settings_chk_start_with_windows"), self)
+        self.chk_start_with_windows.setChecked(self.config.start_with_windows)
+        grid_storage.addWidget(self.chk_start_with_windows, 5, 0, 1, 2)
+
         layout.addWidget(grp_storage)
 
         # 2. Browser Integration Group
@@ -179,6 +183,7 @@ class SettingsDialog(QDialog):
         self.config.auto_categorize = self.chk_categorize.isChecked()
         self.config.server_enabled = self.chk_server.isChecked()
         self.config.auto_start = self.chk_autostart.isChecked()
+        self.config.start_with_windows = self.chk_start_with_windows.isChecked()
         self.config.theme = normalize_theme(self.theme_combo.currentData())
         self.config.language = normalize_language(self.lang_combo.currentData())
 

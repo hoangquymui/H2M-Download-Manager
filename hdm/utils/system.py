@@ -9,9 +9,66 @@ import subprocess
 import sys
 
 
+AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_APP_NAME = "H2M Download Manager"
+
+
 def is_windows() -> bool:
     """Check if the operating system is Windows."""
     return platform.system() == "Windows"
+
+
+def get_autostart_command() -> str:
+    """Return the quoted command string to launch HDM on Windows startup."""
+    if getattr(sys, "frozen", False):
+        exe_path = sys.executable
+        return f'"{exe_path}" --autostart'
+    else:
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        main_py = os.path.join(root_dir, "main.py")
+        if os.path.exists(main_py):
+            return f'"{sys.executable}" "{main_py}" --autostart'
+        return f'"{sys.executable}" "{sys.argv[0]}" --autostart'
+
+
+def is_autostart_enabled() -> bool:
+    """Check if HDM is configured to run on Windows startup in HKCU\\...\\Run."""
+    if not is_windows():
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ) as key:
+            val, _ = winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+            return bool(val)
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def set_autostart(enabled: bool) -> bool:
+    """Enable or disable HDM auto-start with Windows in HKCU\\...\\Run."""
+    if not is_windows():
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            AUTOSTART_REG_KEY,
+            0,
+            winreg.KEY_READ | winreg.KEY_SET_VALUE,
+        ) as key:
+            if enabled:
+                cmd = get_autostart_command()
+                winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, cmd)
+            else:
+                try:
+                    winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception:
+        return False
 
 
 def get_default_downloads_folder() -> str:

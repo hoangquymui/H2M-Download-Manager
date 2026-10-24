@@ -168,7 +168,12 @@ def main() -> None:
 
     app.aboutToQuit.connect(cleanup)
 
-    main_window.show()
+    # If launched on Windows startup with --autostart, stay minimized to system tray
+    autostart_mode = "--autostart" in sys.argv
+    if not autostart_mode:
+        main_window.show()
+    else:
+        logger.info("HDM started automatically on Windows boot (minimized to system tray).")
     sys.exit(app.exec())
 
 
