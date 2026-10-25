@@ -72,7 +72,7 @@
       if (
         style.overflow !== "hidden" &&
         style.overflowY !== "hidden" &&
-        container.offsetWidth >= 200
+        container.offsetWidth >= 160
       ) {
         return container;
       }
@@ -80,7 +80,13 @@
       container = container.parentElement;
     }
 
-    return container || video.parentElement || video;
+    const target = container || video.parentElement || video;
+    if (target && target !== document.body) {
+      try {
+        target.style.setProperty("overflow", "visible", "important");
+      } catch (e) {}
+    }
+    return target;
   }
 
   function showToast(msg, isError) {
@@ -187,7 +193,7 @@
 
     // Outer wrapper
     const wrap = document.createElement("div");
-    wrap.className = isYouTube() ? "hdm-btn-wrap hdm-pos-top" : "hdm-btn-wrap hdm-pos-inside";
+    wrap.className = "hdm-btn-wrap hdm-pos-top";
 
     // Main 28px circular button
     const btn = document.createElement("div");
@@ -282,13 +288,8 @@
     wrap.appendChild(btn);
     wrap.appendChild(closeBtn);
 
-    // Dynamic placement check (above vs below for YouTube; inside corner for generic sites)
+    // Dynamic placement check (above vs below depending on available space)
     function updatePlacement() {
-      if (!isYouTube()) {
-        wrap.classList.add("hdm-pos-inside");
-        wrap.classList.remove("hdm-pos-top", "hdm-pos-bottom");
-        return;
-      }
       const rect = container.getBoundingClientRect();
       if (rect.top < 40) {
         wrap.classList.remove("hdm-pos-top");
@@ -380,7 +381,7 @@
       const videos = document.querySelectorAll("video");
       videos.forEach((vid) => {
         if (vid.offsetWidth < 80 && vid.offsetHeight < 50 && !isYouTube()) return;
-        const container = isYouTube() ? findAnchorContainer(vid) : (vid.parentElement || vid);
+        const container = findAnchorContainer(vid);
         if (container && !container.__hdm_dismissed__) {
           createOutsideButton(vid, container);
         }
