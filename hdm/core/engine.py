@@ -5,13 +5,15 @@ High-performance asynchronous multi-connection downloading with Dynamic Segmenta
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
+import random
 import shutil
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -23,8 +25,8 @@ logger = logging.getLogger("HDM.Engine")
 
 MIN_CHUNK_SIZE = 1048576       # 1 MB
 MIN_STEAL_SIZE = 2097152       # 2 MB minimum remaining to split in half
-READ_BUFFER_SIZE = 65536       # 64 KB read buffer
-MAX_CHUNK_RETRIES = 5          # give up on a segment after this many failures
+READ_BUFFER_SIZE = 262144      # 256 KB read buffer for high-speed streaming
+MAX_CHUNK_RETRIES = 8          # Retries with exponential backoff before failing
 
 STREAMING_DOMAINS = (
     "youtube.com",
@@ -62,6 +64,119 @@ def is_streaming_url(url: str) -> bool:
     return any(d in u for d in STREAMING_DOMAINS)
 
 
+class AsyncBatchDiskWriter:
+    """High-throughput asynchronous non-blocking disk writer.
+    Eliminates file write lock contention between concurrent download workers.
+    """
+
+    def __init__(self, file_path: str, mode: str = "r+b", queue_size: int = 512) -> None:
+        self.file_path = file_path
+        self.mode = mode
+        self.queue: asyncio.Queue[Optional[Tuple[int, bytes]]] = asyncio.Queue(maxsize=queue_size)
+        self._handle: Optional[Any] = None
+        self._writer_task: Optional[asyncio.Task[None]] = None
+        self._closed = False
+        self._write_error: Optional[str] = None
+        self._flush_interval = 0.5
+        self._last_flush = time.time()
+
+    async def start(self) -> None:
+        """Open the target file and spawn the dedicated disk writer coroutine."""
+        self._handle = open(self.file_path, self.mode)
+        self._writer_task = asyncio.create_task(self._worker_loop())
+
+    async def put(self, offset: int, data: bytes) -> None:
+        """Enqueue a block of data for asynchronous disk write."""
+        if self._closed or self._write_error:
+            return
+        await self.queue.put((offset, data))
+
+    async def truncate(self, size: int = 0) -> None:
+        """Truncate the file at a specific size (used for non-range stream retries)."""
+        if self._handle and not self._write_error:
+            self._handle.seek(size)
+            self._handle.truncate(size)
+
+    async def _worker_loop(self) -> None:
+        """Background loop reading from queue and writing directly to disk."""
+        while True:
+            item = await self.queue.get()
+            if item is None:
+                self.queue.task_done()
+                break
+
+            offset, data = item
+            try:
+                if self._handle and not self._write_error:
+                    self._handle.seek(offset)
+                    self._handle.write(data)
+                    now = time.time()
+                    if now - self._last_flush >= self._flush_interval:
+                        self._handle.flush()
+                        self._last_flush = now
+            except Exception as e:
+                self._write_error = str(e)
+                logger.error(f"AsyncBatchDiskWriter error at offset {offset}: {e}")
+            finally:
+                self.queue.task_done()
+
+    @property
+    def error(self) -> Optional[str]:
+        return self._write_error
+
+    async def close(self) -> None:
+        """Gracefully drain the writer queue, flush buffers, and close the file handle."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self.queue.put(None)
+            if self._writer_task:
+                await self._writer_task
+        except Exception:
+            pass
+        finally:
+            self._writer_task = None
+            if self._handle:
+                try:
+                    self._handle.flush()
+                    self._handle.close()
+                except Exception:
+                    pass
+                self._handle = None
+
+
+async def verify_file_checksum(file_path: str, expected_hash: str, algorithm: str = "sha256") -> bool:
+    """Verify file integrity asynchronously without blocking the event loop."""
+    if not os.path.exists(file_path) or not expected_hash:
+        return False
+
+    def compute() -> str:
+        algo_name = algorithm.lower().replace("-", "")
+        if algo_name == "sha256":
+            hasher = hashlib.sha256()
+        elif algo_name == "md5":
+            hasher = hashlib.md5()
+        elif algo_name == "sha1":
+            hasher = hashlib.sha1()
+        elif algo_name == "sha512":
+            hasher = hashlib.sha512()
+        else:
+            hasher = hashlib.sha256()
+
+        with open(file_path, "rb") as f:
+            while chunk := f.read(524288):  # 512 KB chunks
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    try:
+        computed = await asyncio.to_thread(compute)
+        return computed.lower() == expected_hash.strip().lower()
+    except Exception as e:
+        logger.warning(f"Failed to verify checksum for {file_path}: {e}")
+        return False
+
+
 class DownloadEngine:
     """Core download engine handling dynamic segmentation, streaming, and resume."""
 
@@ -78,9 +193,8 @@ class DownloadEngine:
         self._pause_requested = asyncio.Event()
         self._cancel_requested = asyncio.Event()
         self._chunks_lock = asyncio.Lock()
-        self._write_lock = asyncio.Lock()
 
-        self._file_handle: Optional[Any] = None
+        self._disk_writer: Optional[AsyncBatchDiskWriter] = None
         self._fail_counts: Dict[int, int] = {}
         self._last_speed_check_time = time.time()
         self._last_downloaded_bytes = 0
@@ -92,12 +206,11 @@ class DownloadEngine:
     def cancel(self) -> None:
         """Signal the engine to cancel downloading."""
         self._cancel_requested.set()
-        if self._file_handle:
-            try:
-                self._file_handle.close()
-            except Exception:
-                pass
-            self._file_handle = None
+
+    def update_url(self, new_url: str) -> None:
+        """Update download URL (useful when temporary CDN links expire with HTTP 403/410)."""
+        self.task.url = new_url
+        logger.info(f"Task {self.task.id} updated with refreshed URL: {new_url}")
 
     async def probe(self, client: httpx.AsyncClient) -> bool:
         """Inspect the URL with HEAD / GET Range probe, or yt_dlp for streaming video."""
@@ -344,11 +457,15 @@ class DownloadEngine:
             elif status == "finished":
                 self.task.error_message = ""
 
-        # Locate ffmpeg if available
+        # Locate ffmpeg if available across standard system and app locations
         ffmpeg_paths = [
+            shutil.which("ffmpeg"),
+            r"C:\Users\mui\AppData\Local\Microsoft\WinGet\Links\ffmpeg.EXE",
+            r"D:\ProgramFiles\TaiNhanhDM\bin\ffmpeg.exe",
             r"C:\Program Files\File Converter\ffmpeg.exe",
             os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
-            shutil.which("ffmpeg"),
+            os.path.join(os.path.dirname(sys.executable), "bin", "ffmpeg.exe"),
+            r"C:\ffmpeg\bin\ffmpeg.exe",
         ]
         ffmpeg_bin = next((p for p in ffmpeg_paths if p and os.path.exists(p)), None)
 
@@ -371,6 +488,10 @@ class DownloadEngine:
             "progress_hooks": [progress_hook],
             "postprocessor_hooks": [postprocessor_hook],
             "concurrent_fragment_downloads": num_conns,
+            "buffersize": 16 * 1024 * 1024,      # 16 MB memory buffer for high bitrate
+            "http_chunk_size": 10 * 1024 * 1024, # 10 MB chunk size for video fragments
+            "retries": 10,
+            "fragment_retries": 10,
             "quiet": True,
             "no_warnings": True,
             "nocheckcertificate": True,
@@ -458,10 +579,10 @@ class DownloadEngine:
         if is_streaming_url(self.task.url):
             return await self._download_streaming_video()
 
-        timeout = httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=30.0)
-        limits = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+        timeout = httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=45.0)
+        limits = httpx.Limits(max_connections=64, max_keepalive_connections=32, keepalive_expiry=30.0)
 
-        async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True, http2=True) as client:
             # 1. Probe server metadata if not yet known
             if self.task.total_bytes <= 0:
                 success = await self.probe(client)
@@ -530,10 +651,11 @@ class DownloadEngine:
             self._last_speed_check_time = time.time()
             self._last_downloaded_bytes = self.task.downloaded_bytes
 
-            # 3. Open target file for direct binary writing
+            # 3. Start non-blocking disk writer for direct binary streaming
             mode = "r+b" if (self.task.supports_range and os.path.exists(self.task.temp_path)) else "wb"
             try:
-                self._file_handle = open(self.task.temp_path, mode)
+                self._disk_writer = AsyncBatchDiskWriter(self.task.temp_path, mode=mode)
+                await self._disk_writer.start()
             except Exception as e:
                 self.task.error_message = f"Không thể mở tệp ghi: {e}"
                 self.task.status = TaskStatus.ERROR
@@ -558,9 +680,12 @@ class DownloadEngine:
                 except asyncio.CancelledError:
                     pass
 
-                if self._file_handle:
-                    self._file_handle.close()
-                    self._file_handle = None
+                if self._disk_writer:
+                    await self._disk_writer.close()
+                    if self._disk_writer.error and self.task.status != TaskStatus.ERROR:
+                        self.task.status = TaskStatus.ERROR
+                        self.task.error_message = f"Lỗi ghi đĩa: {self._disk_writer.error}"
+                    self._disk_writer = None
 
             # 6. Check completion status
             if self._cancel_requested.is_set():
@@ -614,6 +739,15 @@ class DownloadEngine:
                     self.task.status = TaskStatus.ERROR
                     return False
 
+                # Optional automatic checksum verification
+                checksum = getattr(self.task, "checksum", "") or ""
+                if checksum:
+                    algo = getattr(self.task, "checksum_algo", "sha256") or "sha256"
+                    valid = await verify_file_checksum(self.task.full_path, checksum, algo)
+                    if not valid:
+                        self.task.error_message = f"Cảnh báo: Mã băm {algo.upper()} không khớp với giá trị mong đợi"
+                        logger.warning(f"Task {self.task.id}: checksum mismatch for {self.task.full_path}")
+
                 if self.on_progress:
                     self.on_progress(self.task)
                 return True
@@ -641,7 +775,8 @@ class DownloadEngine:
                     self.on_progress(self.task)
 
     async def _worker(self, client: httpx.AsyncClient, worker_id: int) -> None:
-        """Worker coroutine that claims pending chunks or steals work when idle."""
+        """Worker coroutine that claims pending chunks or steals work from bottleneck chunks."""
+        idle_retries = 0
         while not (self._pause_requested.is_set() or self._cancel_requested.is_set()):
             # 1. Claim a pending chunk
             chunk = await self._get_pending_chunk()
@@ -650,10 +785,21 @@ class DownloadEngine:
             if not chunk and self.task.supports_range:
                 chunk = await self._steal_chunk()
 
-            # 3. If still no chunk available, worker can retire
+            # 3. If no chunk available right now
             if not chunk:
-                break
+                async with self._chunks_lock:
+                    all_done = all(c.status == "completed" for c in self.task.chunks)
+                if all_done:
+                    break
 
+                # Wait briefly in case an active chunk slows down and needs assistance
+                idle_retries += 1
+                if idle_retries > 6:
+                    break
+                await asyncio.sleep(0.5)
+                continue
+
+            idle_retries = 0
             # 4. Download this chunk
             await self._download_chunk(client, chunk)
 
@@ -676,7 +822,9 @@ class DownloadEngine:
         return None
 
     async def _steal_chunk(self) -> Optional[Chunk]:
-        """Dynamic Segmentation: Steal half of the work from the chunk with maximum remaining bytes."""
+        """Dynamic Segmentation: Steal half of the work from the bottleneck chunk
+        (the chunk with the longest Estimated Time Remaining).
+        """
         async with self._chunks_lock:
             active_chunks = [
                 c for c in self.task.chunks
@@ -685,8 +833,12 @@ class DownloadEngine:
             if not active_chunks:
                 return None
 
-            # Pick chunk with largest unfinished remaining bytes
-            target = max(active_chunks, key=lambda c: c.remaining_bytes)
+            # Pick bottleneck chunk based on Estimated Time Remaining
+            def chunk_etr(c: Chunk) -> float:
+                effective_speed = max(c.speed, 2048.0)
+                return c.remaining_bytes / effective_speed
+
+            target = max(active_chunks, key=chunk_etr)
             remaining = target.remaining_bytes
             half = remaining // 2
 
@@ -705,7 +857,8 @@ class DownloadEngine:
 
             logger.info(
                 f"[Work Stealing] Worker split chunk {target.chunk_id}: "
-                f"new chunk {new_chunk.chunk_id} [{new_chunk.start_byte}-{new_chunk.end_byte}]"
+                f"new chunk {new_chunk.chunk_id} [{new_chunk.start_byte}-{new_chunk.end_byte}] "
+                f"(ETR bottleneck: {chunk_etr(target):.1f}s)"
             )
 
             if self.on_chunk_update:
@@ -723,26 +876,25 @@ class DownloadEngine:
             self.task.status = TaskStatus.ERROR
 
     async def _download_chunk(self, client: httpx.AsyncClient, chunk: Chunk) -> None:
-        """Download assigned byte range and write directly to file."""
+        """Download assigned byte range and stream into non-blocking disk writer."""
         headers = dict(self.task.headers)
         if self.task.supports_range and chunk.end_byte >= chunk.current_pos:
             headers["Range"] = f"bytes={chunk.current_pos}-{chunk.end_byte}"
         elif not self.task.supports_range:
             # Server ignores Range: a retry must restart the stream from byte 0
             chunk.current_pos = chunk.start_byte
-            if self._file_handle:
-                async with self._write_lock:
-                    self._file_handle.seek(0)
-                    self._file_handle.truncate()
+            if self._disk_writer:
+                await self._disk_writer.truncate(0)
 
         chunk.status = "downloading"
         chunk_last_time = time.time()
         chunk_last_bytes = chunk.downloaded_bytes
 
-        # Backoff before retrying to avoid hammering servers during network glitches
+        # Jittered exponential backoff for retries
         fail_count = self._fail_counts.get(chunk.chunk_id, 0)
         if fail_count > 0:
-            await asyncio.sleep(min(0.5 * fail_count, 2.5))
+            backoff = min(0.3 * (1.5 ** fail_count) + random.uniform(0.1, 0.3), 3.0)
+            await asyncio.sleep(backoff)
 
         try:
             async with client.stream("GET", self.task.url, headers=headers) as resp:
@@ -758,11 +910,9 @@ class DownloadEngine:
                     if block_len == 0:
                         continue
 
-                    # Direct write to file at exact offset
-                    async with self._write_lock:
-                        if self._file_handle:
-                            self._file_handle.seek(chunk.current_pos)
-                            self._file_handle.write(block)
+                    # Direct write via non-blocking async queue
+                    if self._disk_writer:
+                        await self._disk_writer.put(chunk.current_pos, block)
 
                     chunk.current_pos += block_len
 
