@@ -242,6 +242,21 @@ class DownloadEngine:
         if self.on_progress:
             self.on_progress(self.task)
 
+        num_conns = max(1, min(32, self.task.num_connections or 8))
+        self.task.supports_range = True
+
+        if not self.task.chunks:
+            self.task.chunks = [
+                Chunk(
+                    chunk_id=i + 1,
+                    start_byte=0,
+                    end_byte=0,
+                    current_pos=0,
+                    status="downloading",
+                )
+                for i in range(num_conns)
+            ]
+
         os.makedirs(self.task.save_dir, exist_ok=True)
         base_name = os.path.splitext(self.task.filename)[0] if self.task.filename else "video"
         base_name = clean_filename(base_name)
@@ -262,6 +277,20 @@ class DownloadEngine:
                     self.task.total_bytes = total
                 self.task.downloaded_bytes = downloaded
                 self.task.speed = speed
+
+                if self.task.chunks and self.task.total_bytes > 0:
+                    chunk_size = self.task.total_bytes // num_conns
+                    for i, c in enumerate(self.task.chunks):
+                        c.start_byte = i * chunk_size
+                        c.end_byte = (i + 1) * chunk_size - 1 if i < num_conns - 1 else self.task.total_bytes - 1
+                        c_len = max(1, c.end_byte - c.start_byte + 1)
+                        c_dl = min(c_len, max(0, downloaded - i * chunk_size))
+                        c.current_pos = c.start_byte + c_dl
+                        c.status = "completed" if c_dl >= c_len else "downloading"
+                        c.speed = speed / num_conns
+                    if self.on_chunk_update:
+                        self.on_chunk_update(self.task)
+
                 if self.on_progress:
                     self.on_progress(self.task)
 
@@ -269,6 +298,13 @@ class DownloadEngine:
                 if self.task.total_bytes > 0:
                     self.task.downloaded_bytes = self.task.total_bytes
                 self.task.speed = 0.0
+                if self.task.chunks:
+                    for c in self.task.chunks:
+                        c.current_pos = c.end_byte + 1
+                        c.status = "completed"
+                        c.speed = 0.0
+                    if self.on_chunk_update:
+                        self.on_chunk_update(self.task)
                 if self.on_progress:
                     self.on_progress(self.task)
 
@@ -297,6 +333,7 @@ class DownloadEngine:
             "format": format_spec,
             "outtmpl": out_pattern,
             "progress_hooks": [progress_hook],
+            "concurrent_fragment_downloads": num_conns,
             "quiet": True,
             "no_warnings": True,
             "nocheckcertificate": True,

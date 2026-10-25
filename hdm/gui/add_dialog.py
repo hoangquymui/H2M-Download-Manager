@@ -36,6 +36,9 @@ from hdm.utils.category import FileCategory, get_category_for_filename, get_cate
 from hdm.utils.formatters import extract_filename_from_url, format_bytes
 from hdm.utils.i18n import get_category_display, tr
 
+# Keep active probe threads referenced so they are never GC'd while running
+_ACTIVE_PROBE_WORKERS: set[ProbeWorker] = set()
+
 
 class ProbeWorker(QThread):
     """Background thread to query URL metadata without freezing the modal."""
@@ -340,12 +343,16 @@ class DownloadConfirmDialog(QDialog):
     def _sync_category_from_filename(self, filename: str) -> None:
         url = self.url_input.text().strip() if hasattr(self, "url_input") else ""
         quality = self.quality_combo.currentData() if hasattr(self, "quality_combo") else ""
-        if quality in ("128", "192", "320") or (filename and filename.lower().endswith(".mp3")):
+        fn_cat = get_category_for_filename(filename) if filename else FileCategory.OTHERS
+
+        if quality in ("128", "192", "320") or fn_cat == FileCategory.AUDIO:
             cat = FileCategory.AUDIO
-        elif is_streaming_url(url) or quality in ("1080", "720", "480", "360"):
+        elif quality in ("1080", "720", "480", "360") or fn_cat == FileCategory.VIDEO:
+            cat = FileCategory.VIDEO
+        elif is_streaming_url(url):
             cat = FileCategory.VIDEO
         else:
-            cat = get_category_for_filename(filename)
+            cat = fn_cat
 
         idx = self.cat_combo.findData(cat.value)
         if idx >= 0 and idx != self.cat_combo.currentIndex():
@@ -422,10 +429,13 @@ class DownloadConfirmDialog(QDialog):
         self.info_label.setText(f"⏳ {tr('add_btn_checking')}")
         self.info_label.setStyleSheet(f"color: {colors['info']}; font-weight: 500;")
 
-        self.probe_worker = ProbeWorker(url, self.config.user_agent, self.custom_headers)
-        self.probe_worker.finished_signal.connect(self._on_probe_finished)
-        self.probe_worker.error_signal.connect(self._on_probe_error)
-        self.probe_worker.start()
+        worker = ProbeWorker(url, self.config.user_agent, self.custom_headers)
+        self.probe_worker = worker
+        _ACTIVE_PROBE_WORKERS.add(worker)
+        worker.finished_signal.connect(self._on_probe_finished)
+        worker.error_signal.connect(self._on_probe_error)
+        worker.finished.connect(lambda: _ACTIVE_PROBE_WORKERS.discard(worker))
+        worker.start()
 
     def _on_probe_finished(self, filename: str, total_bytes: int, supports_range: bool) -> None:
         self.btn_probe.setEnabled(True)
@@ -435,7 +445,14 @@ class DownloadConfirmDialog(QDialog):
         is_generic = not curr_text or curr_text in ("watch", "watch.html", "index.html", "download", "videoplayback")
         if filename and (is_generic or is_streaming_url(self.url_input.text().strip())):
             quality = self.quality_combo.currentData() or ""
-            if quality in ("128", "192", "320"):
+            cat_val = self.cat_combo.currentData()
+            is_audio = (
+                quality in ("128", "192", "320")
+                or cat_val == FileCategory.AUDIO.value
+                or curr_text.lower().endswith(".mp3")
+                or self.initial_filename.lower().endswith(".mp3")
+            )
+            if is_audio:
                 name_root, _ = os.path.splitext(filename)
                 filename = f"{name_root}.mp3"
             elif quality in ("1080", "720", "480", "360"):
@@ -518,6 +535,18 @@ class DownloadConfirmDialog(QDialog):
             return
         self.selected_action = "download_later"
         self.accept()
+
+    def done(self, r: int) -> None:
+        if self.probe_worker:
+            try:
+                self.probe_worker.finished_signal.disconnect()
+            except Exception:
+                pass
+            try:
+                self.probe_worker.error_signal.disconnect()
+            except Exception:
+                pass
+        super().done(r)
 
     def get_result_data(self) -> dict:
         """Return the collected download options."""

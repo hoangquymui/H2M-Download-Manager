@@ -117,21 +117,37 @@ class DownloadQueueManager:
         connections: Optional[int] = None,
         auto_start: Optional[bool] = None,
         quality: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> DownloadTask:
         """Create and queue a new download task."""
         if not filename:
             filename = extract_filename_from_url(url)
         filename = clean_filename(filename)
 
-        if is_streaming_url(url):
-            category = FileCategory.VIDEO
+        # Determine category with strict format & quality prioritization
+        final_category: FileCategory
+        if category:
+            try:
+                final_category = FileCategory(category)
+            except ValueError:
+                final_category = get_category_for_filename(filename)
+        elif quality in ("128", "192", "320") or (
+            filename and filename.lower().endswith((".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"))
+        ):
+            final_category = FileCategory.AUDIO
+        elif quality in ("1080", "720", "480", "360") or (
+            filename and filename.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv"))
+        ):
+            final_category = FileCategory.VIDEO
+        elif is_streaming_url(url):
+            final_category = FileCategory.VIDEO
         else:
-            category = get_category_for_filename(filename)
+            final_category = get_category_for_filename(filename)
 
         if not save_dir:
             save_dir = self.config.default_save_dir
             if self.config.auto_categorize:
-                save_dir = get_category_subfolder(category, save_dir)
+                save_dir = get_category_subfolder(final_category, save_dir)
 
         os.makedirs(save_dir, exist_ok=True)
 
@@ -146,7 +162,7 @@ class DownloadQueueManager:
             save_dir=save_dir,
             headers=headers or {"User-Agent": self.config.user_agent},
             num_connections=connections,
-            category=category.value,
+            category=final_category.value,
             quality=quality or "",
             status=TaskStatus.QUEUED if should_start else TaskStatus.PAUSED,
         )

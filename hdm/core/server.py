@@ -10,7 +10,9 @@ import json
 import logging
 from typing import Any, Callable, Dict, Optional
 
+from hdm.core.engine import is_streaming_url
 from hdm.core.manager import DownloadQueueManager
+from hdm.utils.category import FileCategory
 
 logger = logging.getLogger("HDM.Server")
 
@@ -139,6 +141,14 @@ class BrowserIntegrationServer:
                         custom_headers["Cookie"] = payload["cookies"]
 
                     quality = payload.get("quality", "")
+                    format_type = payload.get("format", "")
+                    category = payload.get("category", "")
+                    if not category:
+                        if format_type == "mp3" or quality in ("128", "192", "320") or (filename and filename.lower().endswith(".mp3")):
+                            category = FileCategory.AUDIO.value
+                        elif is_streaming_url(url) or format_type == "mp4" or quality in ("1080", "720", "480", "360"):
+                            category = FileCategory.VIDEO.value
+
                     show_dialog = True
                     if self.config_manager and hasattr(self.config_manager, "config"):
                         show_dialog = getattr(self.config_manager.config, "show_download_dialog", True)
@@ -149,6 +159,7 @@ class BrowserIntegrationServer:
                             "filename": filename or "",
                             "headers": custom_headers,
                             "quality": quality,
+                            "category": category,
                         }
                         self.on_download_requested(req_data)
                         self._send_json(writer, {"ok": True, "mode": "dialog"})
@@ -159,6 +170,7 @@ class BrowserIntegrationServer:
                             headers=custom_headers if custom_headers else None,
                             auto_start=True,
                             quality=quality,
+                            category=category,
                         )
                         self._send_json(writer, {"ok": True, "task_id": task.id})
                 except Exception as e:

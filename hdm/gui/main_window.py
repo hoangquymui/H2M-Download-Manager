@@ -145,6 +145,9 @@ class MainWindow(QMainWindow):
         self.current_filter_code: str = "all"
         self.search_query: str = ""
 
+        self._active_confirm_dialog: Optional[AddDownloadDialog] = None
+        self._pending_download_requests: List[Dict[str, Any]] = []
+
         self._force_quit: bool = False
         self._tray_notified: bool = False
 
@@ -708,6 +711,17 @@ class MainWindow(QMainWindow):
         is_captured = data.get("is_captured", True)
         quality = data.get("quality", "")
 
+        # If a dialog is already showing:
+        if self._active_confirm_dialog and self._active_confirm_dialog.isVisible():
+            # If same URL, raise and don't spawn duplicate
+            if getattr(self._active_confirm_dialog, "initial_url", "") == url:
+                self._active_confirm_dialog.raise_()
+                self._active_confirm_dialog.activateWindow()
+                return
+            # Otherwise queue the request to avoid nested modal event loops
+            self._pending_download_requests.append(data)
+            return
+
         self.show_and_raise()
 
         dlg = AddDownloadDialog(
@@ -719,18 +733,26 @@ class MainWindow(QMainWindow):
             initial_quality=quality,
             parent=self,
         )
-        if dlg.exec():
-            res = dlg.get_result_data()
-            self.manager.add_task(
-                url=res["url"],
-                save_dir=res["save_dir"],
-                filename=res["filename"],
-                headers=res.get("headers"),
-                connections=res["connections"],
-                auto_start=res["auto_start"],
-                quality=res.get("quality", ""),
-            )
-            self.show_and_raise()
+        self._active_confirm_dialog = dlg
+        try:
+            if dlg.exec():
+                res = dlg.get_result_data()
+                self.manager.add_task(
+                    url=res["url"],
+                    save_dir=res["save_dir"],
+                    filename=res["filename"],
+                    headers=res.get("headers"),
+                    connections=res["connections"],
+                    auto_start=res["auto_start"],
+                    quality=res.get("quality", ""),
+                    category=res.get("category"),
+                )
+                self.show_and_raise()
+        finally:
+            self._active_confirm_dialog = None
+            if self._pending_download_requests:
+                next_req = self._pending_download_requests.pop(0)
+                QTimer.singleShot(50, lambda: self.show_confirm_download_dialog(next_req))
 
     def show_settings_dialog(self) -> None:
         old_lang = get_language()

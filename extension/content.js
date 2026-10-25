@@ -319,10 +319,17 @@
     btn.addEventListener("click", toggleMenu);
     btn.addEventListener("contextmenu", toggleMenu);
 
+    let isRequesting = false;
     qualityMenu.addEventListener("click", (e) => {
       e.stopPropagation();
       const item = e.target.closest(".hdm-menu-item");
       if (item) {
+        if (isRequesting) return;
+        isRequesting = true;
+        setTimeout(() => {
+          isRequesting = false;
+        }, 1200);
+
         const fmt = item.getAttribute("data-format");
         const q = item.getAttribute("data-quality") || "";
         qualityMenu.classList.remove("show");
