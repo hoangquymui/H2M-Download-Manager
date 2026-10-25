@@ -127,7 +127,7 @@ class DownloadDetailDialog(QDialog):
 
         self.btn_open_file = QPushButton(tr("detail_btn_open_file"), self)
         self.btn_open_file.setObjectName("btn_secondary")
-        self.btn_open_file.clicked.connect(lambda: launch_file(self.task.full_path))
+        self.btn_open_file.clicked.connect(self._on_open_file_clicked)
         btn_row.addWidget(self.btn_open_file)
 
         self.btn_open_dir = QPushButton(tr("detail_btn_open_dir"), self)
@@ -215,6 +215,32 @@ class DownloadDetailDialog(QDialog):
         # Buttons enable
         is_done = self.task.status == TaskStatus.COMPLETED
         self.btn_open_file.setEnabled(is_done)
+
+    def _on_open_file_clicked(self) -> None:
+        import os
+        from PySide6.QtWidgets import QMessageBox
+        if not self.task.full_path or not os.path.exists(self.task.full_path):
+            msg = tr("file_not_found_msg", filename=self.task.filename)
+            res = QMessageBox.question(
+                self,
+                tr("file_not_found_title"),
+                msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if res == QMessageBox.Yes:
+                parent = self.parent()
+                if hasattr(parent, "manager"):
+                    parent.manager.delete_task(self.task.id, delete_file=False)
+                    if hasattr(parent, "_reload_table_full"):
+                        parent._reload_table_full()
+                self.accept()
+            return
+
+        try:
+            launch_file(self.task.full_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi mở tệp", f"Không thể mở tệp: {e}")
 
     def closeEvent(self, event) -> None:
         self.timer.stop()

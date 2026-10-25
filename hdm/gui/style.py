@@ -581,6 +581,50 @@ QPushButton#btn_danger {
 }
 QPushButton#btn_danger:hover { background: $danger_hover; border-color: $danger_hover; }
 
+/* ===================== Settings Horizontal Navigation ===================== */
+QFrame#settings_nav_bar {
+    background-color: $panel_alt;
+    border: 1px solid $border;
+    border-radius: 9px;
+    padding: 3px;
+}
+QPushButton[class="nav_tab_btn"], QPushButton.nav_tab_btn {
+    background: transparent;
+    color: $text_muted;
+    border: none;
+    border-radius: 7px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton[class="nav_tab_btn"]:hover, QPushButton.nav_tab_btn:hover {
+    background: $hover;
+    color: $text;
+}
+QPushButton[class="nav_tab_btn"]:checked, QPushButton.nav_tab_btn:checked {
+    background: $accent;
+    color: $accent_text;
+    font-weight: 700;
+}
+QFrame#browser_info_box {
+    background-color: $panel_alt;
+    border: 1px solid $border;
+    border-radius: 8px;
+}
+
+/* ===================== Batch Delete Action Bar ===================== */
+QFrame#batch_bar {
+    background-color: $panel_alt;
+    border-bottom: 1px solid $border;
+    padding: 6px 12px;
+}
+QLabel#batch_count_label {
+    font-weight: 700;
+    color: $accent;
+    font-size: 13px;
+    padding: 0 8px;
+}
+
 /* ===================== Form inputs ===================== */
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit {
     background-color: $input_bg;

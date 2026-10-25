@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize
 from PySide6.QtGui import QAction, QCloseEvent, QCursor, QKeySequence, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFrame,
     QHeaderView,
     QHBoxLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -145,6 +147,8 @@ class MainWindow(QMainWindow):
         self.current_filter_status: Optional[TaskStatus] = None
         self.current_filter_code: str = "all"
         self.search_query: str = ""
+        self.batch_mode_active: bool = False
+        self._table_loading: bool = False
 
         self._active_confirm_dialog: Optional[AddDownloadDialog] = None
         self._pending_download_requests: List[Dict[str, Any]] = []
@@ -298,6 +302,44 @@ class MainWindow(QMainWindow):
         header_row.addWidget(self.page_badge)
         layout.addLayout(header_row)
 
+        # Batch delete action bar (hidden until user clicks 'Xoá nhiều' on toolbar)
+        self.batch_bar = QFrame(content)
+        self.batch_bar.setObjectName("batch_bar")
+        batch_layout = QHBoxLayout(self.batch_bar)
+        batch_layout.setContentsMargins(12, 6, 12, 6)
+        batch_layout.setSpacing(12)
+
+        self.chk_batch_all = QCheckBox(tr("batch_select_all"), self.batch_bar)
+        self.chk_batch_all.toggled.connect(self._on_batch_select_all_toggled)
+        batch_layout.addWidget(self.chk_batch_all)
+
+        self.lbl_batch_count = QLabel(tr("batch_selected_count", count=0), self.batch_bar)
+        self.lbl_batch_count.setObjectName("batch_count_label")
+        batch_layout.addWidget(self.lbl_batch_count)
+
+        batch_layout.addStretch()
+
+        self.btn_batch_confirm = QPushButton(tr("batch_btn_confirm"), self.batch_bar)
+        self.btn_batch_confirm.setObjectName("btn_batch_confirm")
+        self.btn_batch_confirm.setCursor(Qt.PointingHandCursor)
+        self.btn_batch_confirm.clicked.connect(self._on_batch_confirm_delete)
+        batch_layout.addWidget(self.btn_batch_confirm)
+
+        self.btn_batch_delete_all = QPushButton(tr("batch_btn_all"), self.batch_bar)
+        self.btn_batch_delete_all.setObjectName("btn_batch_all")
+        self.btn_batch_delete_all.setCursor(Qt.PointingHandCursor)
+        self.btn_batch_delete_all.clicked.connect(self._on_batch_delete_all)
+        batch_layout.addWidget(self.btn_batch_delete_all)
+
+        self.btn_batch_close = QPushButton(tr("batch_btn_close"), self.batch_bar)
+        self.btn_batch_close.setObjectName("btn_batch_close")
+        self.btn_batch_close.setCursor(Qt.PointingHandCursor)
+        self.btn_batch_close.clicked.connect(self.exit_batch_delete_mode)
+        batch_layout.addWidget(self.btn_batch_close)
+
+        self.batch_bar.hide()
+        layout.addWidget(self.batch_bar)
+
         # Table inside a rounded card
         card = QFrame(content)
         card.setObjectName("table_card")
@@ -307,7 +349,7 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget(card)
         self.table.setObjectName("download_table")
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(9)
         self._update_table_headers()
 
         header = self.table.horizontalHeader()
@@ -316,10 +358,22 @@ class MainWindow(QMainWindow):
         header.setStretchLastSection(False)
         header.setHighlightSections(False)
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setMinimumSectionSize(60)
+        header.setMinimumSectionSize(36)
 
-        for column, width in ((0, 260), (1, 112), (2, 100), (3, 190), (4, 104), (5, 108), (6, 106), (7, 126)):
+        for column, width in (
+            (0, 42),
+            (1, 260),
+            (2, 112),
+            (3, 100),
+            (4, 190),
+            (5, 104),
+            (6, 108),
+            (7, 106),
+            (8, 126),
+        ):
             self.table.setColumnWidth(column, width)
+
+        self.table.setColumnHidden(0, True)
 
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(46)
@@ -332,6 +386,7 @@ class MainWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         self.table.doubleClicked.connect(self._on_table_double_clicked)
+        self.table.itemChanged.connect(self._on_table_item_changed)
 
         card_layout.addWidget(self.table)
         layout.addWidget(card, 1)
@@ -350,6 +405,7 @@ class MainWindow(QMainWindow):
 
     def _update_table_headers(self) -> None:
         self.table.setHorizontalHeaderLabels([
+            "☑",
             tr("table_filename"),
             tr("table_category"),
             tr("table_size"),
@@ -505,6 +561,10 @@ class MainWindow(QMainWindow):
         self.btn_delete_action.setToolTip(tr("toolbar_delete_tip"))
         self.btn_delete_action.triggered.connect(self._on_action_delete)
 
+        self.btn_batch_delete_action = toolbar.addAction(get_icon("batch_delete", text_color), tr("toolbar_batch_delete"))
+        self.btn_batch_delete_action.setToolTip(tr("toolbar_batch_delete"))
+        self.btn_batch_delete_action.triggered.connect(self.toggle_batch_delete_mode)
+
         toolbar.addSeparator()
 
         self.btn_folder_action = toolbar.addAction(get_icon("folder", text_color), tr("toolbar_folder"))
@@ -582,6 +642,8 @@ class MainWindow(QMainWindow):
             self.btn_resume_action.setIcon(get_icon("resume", text_color))
             self.btn_pause_action.setIcon(get_icon("pause", text_color))
             self.btn_delete_action.setIcon(get_icon("delete", text_color))
+            if hasattr(self, "btn_batch_delete_action"):
+                self.btn_batch_delete_action.setIcon(get_icon("batch_delete", text_color))
             self.btn_folder_action.setIcon(get_icon("folder", text_color))
             self.btn_settings_action.setIcon(get_icon("settings", text_color))
 
@@ -791,12 +853,22 @@ class MainWindow(QMainWindow):
             self.btn_pause_action.setToolTip(tr("toolbar_pause_tip"))
             self.btn_delete_action.setText(tr("toolbar_delete"))
             self.btn_delete_action.setToolTip(tr("toolbar_delete_tip"))
+            if hasattr(self, "btn_batch_delete_action"):
+                self.btn_batch_delete_action.setText(tr("toolbar_batch_delete"))
+                self.btn_batch_delete_action.setToolTip(tr("toolbar_batch_delete"))
             self.btn_folder_action.setText(tr("toolbar_folder"))
             self.btn_folder_action.setToolTip(tr("toolbar_folder_tip"))
             self.btn_settings_action.setText(tr("toolbar_settings"))
             self.btn_settings_action.setToolTip(tr("toolbar_settings_tip"))
             self.search_input.setPlaceholderText(tr("toolbar_search_placeholder"))
             self._sync_theme_button()
+
+        if hasattr(self, "chk_batch_all"):
+            self.chk_batch_all.setText(tr("batch_select_all"))
+            self.btn_batch_confirm.setText(tr("batch_btn_confirm"))
+            self.btn_batch_delete_all.setText(tr("batch_btn_all"))
+            self.btn_batch_close.setText(tr("batch_btn_close"))
+            self._update_batch_count()
 
         # Table & Sidebar
         if hasattr(self, "table"):
@@ -915,89 +987,102 @@ class MainWindow(QMainWindow):
         return tasks
 
     def _reload_table_full(self) -> None:
-        tasks = self._get_filtered_tasks()
-        self.table.setRowCount(len(tasks))
+        self._table_loading = True
+        try:
+            tasks = self._get_filtered_tasks()
+            self.table.setRowCount(len(tasks))
 
-        colors = self.palette_colors
-        bold_font = QFont()
-        bold_font.setBold(True)
+            colors = self.palette_colors
+            bold_font = QFont()
+            bold_font.setBold(True)
 
-        for row, task in enumerate(tasks):
-            # 0. Filename
-            item_name = QTableWidgetItem(task.filename)
-            item_name.setData(Qt.UserRole, task.id)
-            item_name.setToolTip(f"{task.filename}\n{task.url}")
-            self.table.setItem(row, 0, item_name)
+            for row, task in enumerate(tasks):
+                # 0. Checkbox for batch actions
+                chk_item = QTableWidgetItem()
+                chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                chk_item.setCheckState(Qt.Unchecked)
+                chk_item.setData(Qt.UserRole, task.id)
+                chk_item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, 0, chk_item)
 
-            # 1. Category
-            cat_display = get_category_display(task.category)
-            self.table.setItem(row, 1, QTableWidgetItem(cat_display))
+                # 1. Filename
+                item_name = QTableWidgetItem(task.filename)
+                item_name.setData(Qt.UserRole, task.id)
+                item_name.setToolTip(f"{task.filename}\n{task.url}")
+                self.table.setItem(row, 1, item_name)
 
-            # 2. Size
-            size_str = format_bytes(task.total_bytes) if task.total_bytes > 0 else "--"
-            item_size = QTableWidgetItem(size_str)
-            item_size.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            self.table.setItem(row, 2, item_size)
+                # 2. Category
+                cat_display = get_category_display(task.category)
+                self.table.setItem(row, 2, QTableWidgetItem(cat_display))
 
-            # 3. Progress Bar container (reused across reloads so that fast
-            #    filter/theme switches never leak stale widgets over row 0)
-            container = self.table.cellWidget(row, 3)
-            if container is None:
-                container = QWidget()
-                layout_p = QHBoxLayout(container)
-                layout_p.setContentsMargins(8, 8, 8, 8)
-                pbar = QProgressBar(container)
-                pbar.setRange(0, 100)
-                pbar.setTextVisible(True)
-                pbar.setFixedHeight(18)
-                layout_p.addWidget(pbar)
-                self.table.setCellWidget(row, 3, container)
-            pbar = container.findChild(QProgressBar)
-            if pbar is not None:
-                pbar.setValue(int(task.progress_percent))
-                pbar.setFormat(f"{task.progress_percent:.1f}%")
+                # 3. Size
+                size_str = format_bytes(task.total_bytes) if task.total_bytes > 0 else "--"
+                item_size = QTableWidgetItem(size_str)
+                item_size.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(row, 3, item_size)
 
-            # 4. Speed
-            if task.status == TaskStatus.DOWNLOADING and task.speed > 0:
-                item_speed = QTableWidgetItem(format_speed(task.speed))
-                item_speed.setForeground(QColor(colors["cyan"]))
-                item_speed.setFont(bold_font)
-            elif task.status == TaskStatus.PROCESSING:
-                item_speed = QTableWidgetItem("Xử lý...")
-                item_speed.setForeground(QColor(colors["warning"]))
-                item_speed.setFont(bold_font)
-            else:
-                item_speed = QTableWidgetItem("--")
-                item_speed.setForeground(QColor(colors["text_faint"]))
-            item_speed.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 4, item_speed)
+                # 4. Progress Bar container
+                container = self.table.cellWidget(row, 4)
+                if container is None:
+                    container = QWidget()
+                    layout_p = QHBoxLayout(container)
+                    layout_p.setContentsMargins(8, 8, 8, 8)
+                    pbar = QProgressBar(container)
+                    pbar.setRange(0, 100)
+                    pbar.setTextVisible(True)
+                    pbar.setFixedHeight(18)
+                    layout_p.addWidget(pbar)
+                    self.table.setCellWidget(row, 4, container)
+                pbar = container.findChild(QProgressBar)
+                if pbar is not None:
+                    pbar.setValue(int(task.progress_percent))
+                    pbar.setFormat(f"{task.progress_percent:.1f}%")
 
-            # 5. ETA
-            if task.status == TaskStatus.DOWNLOADING:
-                eta_str = format_eta(task.eta)
-            elif task.status == TaskStatus.PROCESSING:
-                eta_str = "Chờ hoàn tất"
-            else:
-                eta_str = "--"
-            item_eta = QTableWidgetItem(eta_str)
-            item_eta.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 5, item_eta)
+                # 5. Speed
+                if task.status == TaskStatus.DOWNLOADING and task.speed > 0:
+                    item_speed = QTableWidgetItem(format_speed(task.speed))
+                    item_speed.setForeground(QColor(colors["cyan"]))
+                    item_speed.setFont(bold_font)
+                elif task.status == TaskStatus.PROCESSING:
+                    item_speed = QTableWidgetItem("Xử lý...")
+                    item_speed.setForeground(QColor(colors["warning"]))
+                    item_speed.setFont(bold_font)
+                else:
+                    item_speed = QTableWidgetItem("--")
+                    item_speed.setForeground(QColor(colors["text_faint"]))
+                item_speed.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, 5, item_speed)
 
-            # 6. Status with color badge
-            item_status = QTableWidgetItem(get_status_display(task.status))
-            item_status.setTextAlignment(Qt.AlignCenter)
-            item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
-            item_status.setFont(bold_font)
-            self.table.setItem(row, 6, item_status)
+                # 6. ETA
+                if task.status == TaskStatus.DOWNLOADING:
+                    eta_str = format_eta(task.eta)
+                elif task.status == TaskStatus.PROCESSING:
+                    eta_str = "Chờ hoàn tất"
+                else:
+                    eta_str = "--"
+                item_eta = QTableWidgetItem(eta_str)
+                item_eta.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, 6, item_eta)
 
-            # 7. Date
-            item_date = QTableWidgetItem(format_date(task.created_at))
-            item_date.setTextAlignment(Qt.AlignCenter)
-            item_date.setForeground(QColor(colors["muted"]))
-            self.table.setItem(row, 7, item_date)
+                # 7. Status with color badge
+                item_status = QTableWidgetItem(get_status_display(task.status))
+                item_status.setTextAlignment(Qt.AlignCenter)
+                item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
+                item_status.setFont(bold_font)
+                self.table.setItem(row, 7, item_status)
+
+                # 8. Date
+                item_date = QTableWidgetItem(format_date(task.created_at))
+                item_date.setTextAlignment(Qt.AlignCenter)
+                item_date.setForeground(QColor(colors["muted"]))
+                self.table.setItem(row, 8, item_date)
+        finally:
+            self._table_loading = False
 
         self._update_sidebar_counts()
         self._sync_empty_state()
+        if getattr(self, "batch_mode_active", False):
+            self._update_batch_count()
 
     def _refresh_table_data(self) -> None:
         """Poll and refresh row progress, speeds, and status bar."""
@@ -1014,7 +1099,7 @@ class MainWindow(QMainWindow):
         bold_font.setBold(True)
 
         for row in range(self.table.rowCount()):
-            item_name = self.table.item(row, 0)
+            item_name = self.table.item(row, 1) or self.table.item(row, 0)
             if not item_name:
                 continue
             task_id = item_name.data(Qt.UserRole)
@@ -1023,7 +1108,7 @@ class MainWindow(QMainWindow):
                 continue
 
             # Update progress bar
-            container = self.table.cellWidget(row, 3)
+            container = self.table.cellWidget(row, 4)
             if container:
                 pbar = container.findChild(QProgressBar)
                 if pbar:
@@ -1031,7 +1116,7 @@ class MainWindow(QMainWindow):
                     pbar.setFormat(f"{task.progress_percent:.1f}%")
 
             # Update speed
-            item_speed = self.table.item(row, 4)
+            item_speed = self.table.item(row, 5)
             if item_speed:
                 if task.status == TaskStatus.DOWNLOADING and task.speed > 0:
                     item_speed.setText(format_speed(task.speed))
@@ -1046,7 +1131,7 @@ class MainWindow(QMainWindow):
                     item_speed.setForeground(QColor(colors["text_faint"]))
 
             # Update ETA
-            item_eta = self.table.item(row, 5)
+            item_eta = self.table.item(row, 6)
             if item_eta:
                 if task.status == TaskStatus.DOWNLOADING:
                     eta_str = format_eta(task.eta)
@@ -1057,7 +1142,7 @@ class MainWindow(QMainWindow):
                 item_eta.setText(eta_str)
 
             # Update status
-            item_status = self.table.item(row, 6)
+            item_status = self.table.item(row, 7)
             if item_status:
                 item_status.setText(get_status_display(task.status))
                 item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
@@ -1080,15 +1165,39 @@ class MainWindow(QMainWindow):
         row = self.table.currentRow()
         if row < 0:
             return None
-        item = self.table.item(row, 0)
+        item = self.table.item(row, 1) or self.table.item(row, 0)
         if not item:
             return None
         task_id = item.data(Qt.UserRole)
         return self.manager.tasks.get(task_id)
 
+    def _open_task_file(self, task: DownloadTask) -> None:
+        """Open downloaded file; if missing on disk, prompt user to delete from list."""
+        if not task.full_path or not os.path.exists(task.full_path):
+            res = QMessageBox.question(
+                self,
+                tr("file_not_found_title"),
+                tr("file_not_found_msg", filename=task.filename),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if res == QMessageBox.Yes:
+                self.manager.delete_task(task.id, delete_file=False)
+                self._reload_table_full()
+            return
+
+        try:
+            launch_file(task.full_path)
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi mở tệp", f"Không thể mở tệp: {e}")
+
     def _on_table_double_clicked(self) -> None:
         task = self._get_selected_task()
-        if task:
+        if not task:
+            return
+        if task.status == TaskStatus.COMPLETED:
+            self._open_task_file(task)
+        else:
             dlg = DownloadDetailDialog(task, parent=self)
             dlg.exec()
 
@@ -1113,7 +1222,7 @@ class MainWindow(QMainWindow):
 
         if task.status == TaskStatus.COMPLETED:
             act_open_file = menu.addAction(tr("ctx_open_file"))
-            act_open_file.triggered.connect(lambda: launch_file(task.full_path))
+            act_open_file.triggered.connect(lambda: self._open_task_file(task))
 
         act_open_dir = menu.addAction(f"📁 {tr('ctx_open_folder')}")
         act_open_dir.triggered.connect(lambda: open_file_in_explorer(task.full_path))
@@ -1158,3 +1267,121 @@ class MainWindow(QMainWindow):
             open_folder(task.save_dir)
         else:
             open_folder(self.config.default_save_dir)
+
+    # ------------------------------------------------------------------
+    # Batch delete mode
+    # ------------------------------------------------------------------
+    def toggle_batch_delete_mode(self) -> None:
+        """Toggle batch delete checkbox column and top action bar."""
+        if self.batch_mode_active:
+            self.exit_batch_delete_mode()
+        else:
+            self.enter_batch_delete_mode()
+
+    def enter_batch_delete_mode(self) -> None:
+        self.batch_mode_active = True
+        self.table.setColumnHidden(0, False)
+        self.batch_bar.show()
+        self._uncheck_all_batch()
+        self._update_batch_count()
+
+    def exit_batch_delete_mode(self) -> None:
+        self.batch_mode_active = False
+        self.table.setColumnHidden(0, True)
+        self.batch_bar.hide()
+        self._uncheck_all_batch()
+
+    def _uncheck_all_batch(self) -> None:
+        self._table_loading = True
+        try:
+            self.chk_batch_all.setChecked(False)
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item:
+                    item.setCheckState(Qt.Unchecked)
+        finally:
+            self._table_loading = False
+
+    def _on_batch_select_all_toggled(self, checked: bool) -> None:
+        if self._table_loading:
+            return
+        self._table_loading = True
+        try:
+            target_state = Qt.Checked if checked else Qt.Unchecked
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item:
+                    item.setCheckState(target_state)
+        finally:
+            self._table_loading = False
+        self._update_batch_count()
+
+    def _on_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._table_loading or item.column() != 0:
+            return
+        self._update_batch_count()
+
+    def _get_checked_task_ids(self) -> List[str]:
+        task_ids = []
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and item.checkState() == Qt.Checked:
+                t_id = item.data(Qt.UserRole)
+                if t_id:
+                    task_ids.append(t_id)
+        return task_ids
+
+    def _update_batch_count(self) -> None:
+        if not hasattr(self, "lbl_batch_count"):
+            return
+        count = len(self._get_checked_task_ids())
+        self.lbl_batch_count.setText(tr("batch_selected_count", count=count))
+
+    def _on_batch_confirm_delete(self) -> None:
+        task_ids = self._get_checked_task_ids()
+        if not task_ids:
+            QMessageBox.information(
+                self,
+                tr("batch_no_selection_title"),
+                tr("batch_no_selection_msg"),
+            )
+            return
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(tr("batch_confirm_title"))
+        box.setText(tr("batch_confirm_msg", count=len(task_ids)))
+        chk_del_files = QCheckBox(tr("batch_delete_files_chk"), box)
+        chk_del_files.setChecked(True)
+        box.setCheckBox(chk_del_files)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.Yes)
+
+        if box.exec() == QMessageBox.Yes:
+            delete_disk_files = chk_del_files.isChecked()
+            for tid in task_ids:
+                self.manager.delete_task(tid, delete_file=delete_disk_files)
+            self._reload_table_full()
+            self._update_batch_count()
+
+    def _on_batch_delete_all(self) -> None:
+        tasks = self._get_filtered_tasks()
+        if not tasks:
+            return
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(tr("batch_all_title"))
+        box.setText(tr("batch_all_msg", count=len(tasks)))
+        chk_del_files = QCheckBox(tr("batch_delete_files_chk"), box)
+        chk_del_files.setChecked(True)
+        box.setCheckBox(chk_del_files)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+
+        if box.exec() == QMessageBox.Yes:
+            delete_disk_files = chk_del_files.isChecked()
+            for t in tasks:
+                self.manager.delete_task(t.id, delete_file=delete_disk_files)
+            self._reload_table_full()
+            self._update_batch_count()

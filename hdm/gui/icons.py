@@ -141,6 +141,23 @@ def get_icon(name: str, color_hex: str = "#60A5FA", size: int = 36) -> QIcon:
         path.closeSubpath()
         painter.drawPath(path)
 
+    elif name == "batch_delete":
+        # Checkbox with checkmark + list lines
+        pen.setWidthF(1.8)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(QRectF(3, 4, 8, 8), 1.5, 1.5)
+        check = QPainterPath()
+        check.moveTo(4.5, 8)
+        check.lineTo(6.5, 10)
+        check.lineTo(9.5, 6)
+        painter.drawPath(check)
+        painter.drawLine(QPointF(14, 6), QPointF(21, 6))
+        painter.drawLine(QPointF(14, 10), QPointF(21, 10))
+        painter.drawRoundedRect(QRectF(3, 14, 8, 8), 1.5, 1.5)
+        painter.drawLine(QPointF(14, 16), QPointF(21, 16))
+        painter.drawLine(QPointF(14, 20), QPointF(21, 20))
+
     elif name == "moon":
         pen.setWidthF(2.0)
         painter.setPen(pen)
