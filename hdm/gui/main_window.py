@@ -201,21 +201,12 @@ class MainWindow(QMainWindow):
         self.status_bar.setSizeGripEnabled(False)
         self.setStatusBar(self.status_bar)
 
-        self.lbl_server_status = QLabel(
-            tr("status_server_ready", port=self.config.server_port)
-            if self.config.server_enabled
-            else tr("status_server_disabled"),
-            self,
-        )
-        self.lbl_server_status.setObjectName("status_server")
-
         self.lbl_speed_summary = QLabel(tr("status_speed", speed="0 KB/s"), self)
         self.lbl_speed_summary.setObjectName("status_speed")
 
         self.lbl_tasks_summary = QLabel(tr("status_tasks_count", count=0), self)
         self.lbl_tasks_summary.setObjectName("status_tasks")
 
-        self.status_bar.addWidget(self.lbl_server_status, 1)
         self.status_bar.addPermanentWidget(self.lbl_speed_summary)
         self.status_bar.addPermanentWidget(self.lbl_tasks_summary)
 
@@ -1016,10 +1007,6 @@ class MainWindow(QMainWindow):
 
         self.lbl_speed_summary.setText(tr("status_speed", speed=format_speed(total_speed)))
         self.lbl_tasks_summary.setText(f"📊 {active_count} {tr('sidebar_status_downloading').lower()} / {total_count}")
-        if self.config.server_enabled:
-            self.lbl_server_status.setText(tr("status_server_ready", port=self.config.server_port))
-        else:
-            self.lbl_server_status.setText(tr("status_server_disabled"))
         self._update_page_header()
 
         colors = self.palette_colors
