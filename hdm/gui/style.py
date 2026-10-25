@@ -71,6 +71,7 @@ DARK_PALETTE: Dict[str, str] = {
     "table_alt": "#0F1626",
     "header_bg": "#111827",
     "header_text": "#94A3B8",
+    "header_divider": "#2E3D59",
     # Inputs / buttons
     "input_bg": "#131C2E",
     "input_border": "#273552",
@@ -163,6 +164,7 @@ LIGHT_PALETTE: Dict[str, str] = {
     "table_alt": "#fafcff",
     "header_bg": "#f1f5fb",
     "header_text": "#64748b",
+    "header_divider": "#B8C5D6",
     # Inputs / buttons
     "input_bg": "#ffffff",
     "input_border": "#d8e0ec",
@@ -493,19 +495,30 @@ QTableWidget#download_table::item:selected {
     background-color: $selected;
     color: $selected_text;
 }
-QHeaderView { background-color: $header_bg; border: none; }
+QHeaderView {
+    background-color: $header_bg;
+    border: none;
+    border-bottom: 1px solid $border;
+}
 QHeaderView::section {
     background-color: $header_bg;
     color: $header_text;
-    padding: 10px;
-    border: none;
-    border-right: 1px solid $border_soft;
+    padding: 9px 12px;
+    border-top: none;
+    border-left: none;
+    border-right: 1px solid $header_divider;
     border-bottom: 1px solid $border;
     font-weight: 700;
     font-size: 11px;
     letter-spacing: 0.4px;
 }
-QHeaderView::section:hover { color: $accent; }
+QHeaderView::section:hover {
+    color: $accent;
+    background-color: $hover;
+}
+QHeaderView::section:last {
+    border-right: none;
+}
 QTableCornerButton::section {
     background-color: $header_bg;
     border: none;

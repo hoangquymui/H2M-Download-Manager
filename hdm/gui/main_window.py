@@ -312,13 +312,13 @@ class MainWindow(QMainWindow):
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        header.setCascadingSectionResizes(False)
+        header.setStretchLastSection(False)
         header.setHighlightSections(False)
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setMinimumSectionSize(70)
+        header.setMinimumSectionSize(60)
 
-        for column, width in ((1, 112), (2, 100), (3, 190), (4, 104), (5, 108), (6, 106), (7, 126)):
+        for column, width in ((0, 260), (1, 112), (2, 100), (3, 190), (4, 104), (5, 108), (6, 106), (7, 126)):
             self.table.setColumnWidth(column, width)
 
         self.table.verticalHeader().setVisible(False)
