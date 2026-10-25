@@ -57,11 +57,13 @@ STREAMING_DOMAINS = (
 
 
 def is_streaming_url(url: str) -> bool:
-    """Check if the URL belongs to a streaming service supported by yt-dlp."""
+    """Check if the URL belongs to a streaming service or manifest supported by yt-dlp."""
     if not url:
         return False
-    u = url.lower()
-    return any(d in u for d in STREAMING_DOMAINS)
+    u = url.lower().split("?")[0]
+    if u.endswith(".m3u8") or u.endswith(".mpd") or ".m3u8" in u or ".mpd" in u:
+        return True
+    return any(d in url.lower() for d in STREAMING_DOMAINS)
 
 
 class AsyncBatchDiskWriter:

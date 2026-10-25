@@ -443,6 +443,9 @@ class DownloadConfirmDialog(QDialog):
 
         curr_text = self.filename_input.text().strip()
         is_generic = not curr_text or curr_text in ("watch", "watch.html", "index.html", "download", "videoplayback")
+        is_probe_generic = filename.lower() in ("index.mp4", "master.mp4", "video.mp4", "playlist.mp4", "index", "master")
+        if curr_text and not is_generic and is_probe_generic:
+            filename = curr_text
         if filename and (is_generic or is_streaming_url(self.url_input.text().strip())):
             quality = self.quality_combo.currentData() or ""
             cat_val = self.cat_combo.currentData()
