@@ -57,7 +57,7 @@ class DownloadQueueManager:
             async with self._lock:
                 running_count = sum(
                     1 for t in self.tasks.values()
-                    if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING)
+                    if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.PROCESSING)
                 )
                 slots_available = self.config.max_concurrent_tasks - running_count
 
@@ -278,7 +278,7 @@ class DownloadQueueManager:
         """Return number of actively running tasks."""
         return sum(
             1 for t in self.tasks.values()
-            if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING)
+            if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.PROCESSING)
         )
 
     def save_tasks(self) -> None:

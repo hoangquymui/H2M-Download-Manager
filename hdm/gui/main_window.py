@@ -105,6 +105,7 @@ def build_status_colors() -> Dict[TaskStatus, str]:
     return {
         TaskStatus.COMPLETED: p["success"],
         TaskStatus.DOWNLOADING: p["info"],
+        TaskStatus.PROCESSING: p["warning"],
         TaskStatus.CONNECTING: p["cyan"],
         TaskStatus.QUEUED: p["purple"],
         TaskStatus.PAUSED: p["warning"],
@@ -970,6 +971,10 @@ class MainWindow(QMainWindow):
                 item_speed = QTableWidgetItem(format_speed(task.speed))
                 item_speed.setForeground(QColor(colors["cyan"]))
                 item_speed.setFont(bold_font)
+            elif task.status == TaskStatus.PROCESSING:
+                item_speed = QTableWidgetItem("Xử lý...")
+                item_speed.setForeground(QColor(colors["warning"]))
+                item_speed.setFont(bold_font)
             else:
                 item_speed = QTableWidgetItem("--")
                 item_speed.setForeground(QColor(colors["text_faint"]))
@@ -977,7 +982,12 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 4, item_speed)
 
             # 5. ETA
-            eta_str = format_eta(task.eta) if task.status == TaskStatus.DOWNLOADING else "--"
+            if task.status == TaskStatus.DOWNLOADING:
+                eta_str = format_eta(task.eta)
+            elif task.status == TaskStatus.PROCESSING:
+                eta_str = "Chờ hoàn tất"
+            else:
+                eta_str = "--"
             item_eta = QTableWidgetItem(eta_str)
             item_eta.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 5, item_eta)
@@ -1040,6 +1050,10 @@ class MainWindow(QMainWindow):
                     item_speed.setText(format_speed(task.speed))
                     item_speed.setForeground(QColor(colors["cyan"]))
                     item_speed.setFont(bold_font)
+                elif task.status == TaskStatus.PROCESSING:
+                    item_speed.setText("Xử lý...")
+                    item_speed.setForeground(QColor(colors["warning"]))
+                    item_speed.setFont(bold_font)
                 else:
                     item_speed.setText("--")
                     item_speed.setForeground(QColor(colors["text_faint"]))
@@ -1047,7 +1061,12 @@ class MainWindow(QMainWindow):
             # Update ETA
             item_eta = self.table.item(row, 5)
             if item_eta:
-                eta_str = format_eta(task.eta) if task.status == TaskStatus.DOWNLOADING else "--"
+                if task.status == TaskStatus.DOWNLOADING:
+                    eta_str = format_eta(task.eta)
+                elif task.status == TaskStatus.PROCESSING:
+                    eta_str = "Chờ hoàn tất"
+                else:
+                    eta_str = "--"
                 item_eta.setText(eta_str)
 
             # Update status

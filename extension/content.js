@@ -97,6 +97,25 @@
     }, 4000);
   }
 
+  function getVideoSource(video) {
+    if (isYouTube()) {
+      return window.location.href;
+    }
+    if (video) {
+      const rawSrc = video.currentSrc || video.src;
+      if (rawSrc && !rawSrc.startsWith("blob:")) {
+        return rawSrc;
+      }
+      const sources = video.querySelectorAll("source");
+      for (const s of sources) {
+        if (s.src && !s.src.startsWith("blob:")) {
+          return s.src;
+        }
+      }
+    }
+    return window.location.href;
+  }
+
   function triggerDownload(formatType, qualityType, sourceBtn, video) {
     const originalHtml = sourceBtn ? sourceBtn.innerHTML : "";
     if (sourceBtn) {
@@ -105,14 +124,7 @@
     }
 
     const pageUrl = window.location.href;
-    let targetUrl = pageUrl;
-
-    if (!isYouTube() && video) {
-      const rawSrc = video.currentSrc || video.src;
-      if (rawSrc && !rawSrc.startsWith("blob:")) {
-        targetUrl = rawSrc;
-      }
-    }
+    const targetUrl = getVideoSource(video);
 
     chrome.runtime.sendMessage(
       {
@@ -123,7 +135,7 @@
           title: getVideoTitle(),
           format: formatType || "mp4",
           quality: qualityType || "",
-          isStreaming: isYouTube(),
+          isStreaming: isYouTube() || targetUrl === pageUrl,
         },
       },
       (res) => {
@@ -175,7 +187,7 @@
 
     // Outer wrapper
     const wrap = document.createElement("div");
-    wrap.className = "hdm-btn-wrap hdm-pos-top";
+    wrap.className = isYouTube() ? "hdm-btn-wrap hdm-pos-top" : "hdm-btn-wrap hdm-pos-inside";
 
     // Main 28px circular button
     const btn = document.createElement("div");
@@ -270,8 +282,13 @@
     wrap.appendChild(btn);
     wrap.appendChild(closeBtn);
 
-    // Dynamic placement check (above vs below depending on available space)
+    // Dynamic placement check (above vs below for YouTube; inside corner for generic sites)
     function updatePlacement() {
+      if (!isYouTube()) {
+        wrap.classList.add("hdm-pos-inside");
+        wrap.classList.remove("hdm-pos-top", "hdm-pos-bottom");
+        return;
+      }
       const rect = container.getBoundingClientRect();
       if (rect.top < 40) {
         wrap.classList.remove("hdm-pos-top");
@@ -362,8 +379,8 @@
 
       const videos = document.querySelectorAll("video");
       videos.forEach((vid) => {
-        if (vid.offsetWidth < 120 && vid.offsetHeight < 80 && !isYouTube()) return;
-        const container = findAnchorContainer(vid);
+        if (vid.offsetWidth < 80 && vid.offsetHeight < 50 && !isYouTube()) return;
+        const container = isYouTube() ? findAnchorContainer(vid) : (vid.parentElement || vid);
         if (container && !container.__hdm_dismissed__) {
           createOutsideButton(vid, container);
         }

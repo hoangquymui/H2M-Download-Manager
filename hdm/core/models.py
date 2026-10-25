@@ -17,6 +17,7 @@ class TaskStatus(str, Enum):
     QUEUED = "Hàng đợi"
     CONNECTING = "Đang kết nối"
     DOWNLOADING = "Đang tải"
+    PROCESSING = "Đang xử lý"
     PAUSED = "Tạm dừng"
     COMPLETED = "Hoàn thành"
     ERROR = "Lỗi"

@@ -29,18 +29,28 @@ MAX_CHUNK_RETRIES = 5          # give up on a segment after this many failures
 STREAMING_DOMAINS = (
     "youtube.com",
     "youtu.be",
-    "tiktok.com",
-    "facebook.com/watch",
-    "facebook.com/reel",
+    "facebook.com",
     "fb.watch",
+    "tiktok.com",
+    "douyin.com",
     "instagram.com",
+    "threads.net",
     "twitter.com",
     "x.com",
+    "reddit.com",
     "vimeo.com",
     "dailymotion.com",
     "bilibili.com",
     "twitch.tv",
     "soundcloud.com",
+    "pinterest.com",
+    "rumble.com",
+    "streamable.com",
+    "weibo.com",
+    "kuaishou.com",
+    "vk.com",
+    "bandcamp.com",
+    "mixcloud.com",
 )
 
 
@@ -298,6 +308,12 @@ class DownloadEngine:
                 if self.task.total_bytes > 0:
                     self.task.downloaded_bytes = self.task.total_bytes
                 self.task.speed = 0.0
+                self.task.status = TaskStatus.PROCESSING
+                self.task.error_message = (
+                    "Đang trích xuất & chuyển đổi MP3 (FFmpeg)..."
+                    if is_audio_only
+                    else "Đang ghép nối video & âm thanh (FFmpeg)..."
+                )
                 if self.task.chunks:
                     for c in self.task.chunks:
                         c.current_pos = c.end_byte + 1
@@ -307,6 +323,26 @@ class DownloadEngine:
                         self.on_chunk_update(self.task)
                 if self.on_progress:
                     self.on_progress(self.task)
+
+        def postprocessor_hook(d):
+            if self._cancel_requested.is_set():
+                raise Exception("Tác vụ đã bị hủy bởi người dùng")
+            if self._pause_requested.is_set():
+                raise Exception("Tác vụ đã tạm dừng")
+
+            status = d.get("status")
+            pp = d.get("postprocessor", "")
+            if status == "started":
+                self.task.status = TaskStatus.PROCESSING
+                self.task.speed = 0.0
+                if "ExtractAudio" in pp or is_audio_only:
+                    self.task.error_message = "Đang trích xuất & chuyển đổi MP3 (FFmpeg)..."
+                else:
+                    self.task.error_message = "Đang ghép nối video & âm thanh (FFmpeg)..."
+                if self.on_progress:
+                    self.on_progress(self.task)
+            elif status == "finished":
+                self.task.error_message = ""
 
         # Locate ffmpeg if available
         ffmpeg_paths = [
@@ -333,6 +369,7 @@ class DownloadEngine:
             "format": format_spec,
             "outtmpl": out_pattern,
             "progress_hooks": [progress_hook],
+            "postprocessor_hooks": [postprocessor_hook],
             "concurrent_fragment_downloads": num_conns,
             "quiet": True,
             "no_warnings": True,
@@ -387,6 +424,7 @@ class DownloadEngine:
                 self.task.total_bytes = os.path.getsize(final_path)
                 self.task.downloaded_bytes = self.task.total_bytes
                 self.task.status = TaskStatus.COMPLETED
+                self.task.error_message = ""
                 self.task.speed = 0.0
                 self.task.completed_at = time.time()
                 if self.on_progress:

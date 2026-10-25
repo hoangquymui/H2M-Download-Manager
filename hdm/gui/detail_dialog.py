@@ -162,6 +162,9 @@ class DownloadDetailDialog(QDialog):
             TaskStatus.DOWNLOADING: badge.format(
                 bg=colors["accent_soft"], fg=colors["info"], bd=colors["accent_border"]
             ),
+            TaskStatus.PROCESSING: badge.format(
+                bg=colors["warning_bg"], fg=colors["warning"], bd=colors["warning_border"]
+            ),
             TaskStatus.CONNECTING: badge.format(
                 bg=colors["accent_soft"], fg=colors["cyan"], bd=colors["accent_border"]
             ),
@@ -197,6 +200,8 @@ class DownloadDetailDialog(QDialog):
             speed_str = format_speed(self.task.speed)
             eta_str = format_eta(self.task.eta)
             self.lbl_speed.setText(f"{speed_str}  ({tr('detail_remaining', eta=eta_str)})")
+        elif self.task.status == TaskStatus.PROCESSING:
+            self.lbl_speed.setText(self.task.error_message or "Đang xử lý / chuyển đổi tệp...")
         else:
             self.lbl_speed.setText("--")
 
