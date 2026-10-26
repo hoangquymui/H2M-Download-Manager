@@ -1,12 +1,16 @@
 /**
  * HDM Browser Extension - Background Service Worker
- * Intercepts downloads and communicates with HDM desktop server at 127.0.0.1:9618
+ * Intercepts downloads, sniffs network media streams (HLS/m3u8, DASH/mpd, MP4),
+ * and communicates with HDM desktop server at 127.0.0.1:9618
  */
 
 const HDM_URLS = ["http://127.0.0.1:9618", "http://localhost:9618"];
 
 // Cache processed downloads to avoid re-interception loops
 const processedDownloads = new Set();
+
+// In-memory media stream cache per tab: Map<tabId, Array<MediaItem>>
+const capturedMediaByTab = new Map();
 
 /**
  * Check if HDM desktop app is currently running.
@@ -81,7 +85,7 @@ async function getCookiesForUrl(url) {
 }
 
 /**
- * Core download interception listener.
+ * Core download interception listener (for standard file downloads).
  */
 chrome.downloads.onCreated.addListener(async (item) => {
   if (processedDownloads.has(item.id)) return;
@@ -131,6 +135,200 @@ chrome.downloads.onCreated.addListener(async (item) => {
       // Ignore
     }
   }
+});
+
+// =========================================================================
+// Network Media Sniffer (HLS .m3u8, DASH .mpd, direct video/audio)
+// =========================================================================
+
+function detectMediaType(rawUrl, mimeType = "") {
+  if (!rawUrl || !rawUrl.startsWith("http")) return null;
+  const url = rawUrl.toLowerCase();
+  const clean = url.split("?")[0];
+
+  // Exclude non-media files & tiny segments
+  if (
+    clean.endsWith(".ts") ||
+    clean.endsWith(".m4s") ||
+    clean.endsWith(".vtt") ||
+    clean.endsWith(".srt") ||
+    clean.endsWith(".key") ||
+    clean.endsWith(".js") ||
+    clean.endsWith(".css") ||
+    clean.endsWith(".json") ||
+    clean.endsWith(".png") ||
+    clean.endsWith(".jpg") ||
+    clean.endsWith(".jpeg") ||
+    clean.endsWith(".webp") ||
+    clean.endsWith(".gif") ||
+    clean.endsWith(".svg") ||
+    clean.endsWith(".woff") ||
+    clean.endsWith(".woff2")
+  ) {
+    return null;
+  }
+
+  // Exclude ad networks & analytics
+  const adDomains = [
+    "google-analytics.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "facebook.com/tr",
+    "adservice.google.",
+    "adnxs.com",
+    "scorecardresearch.com",
+    "clarity.ms",
+    "hotjar.com",
+    "criteo.com",
+  ];
+  if (adDomains.some((d) => url.includes(d))) return null;
+
+  // 1. HLS m3u8 playlist
+  if (
+    clean.endsWith(".m3u8") ||
+    url.includes(".m3u8?") ||
+    (url.includes("/hls/") && url.includes(".m3u8")) ||
+    mimeType.includes("application/vnd.apple.mpegurl") ||
+    mimeType.includes("application/x-mpegurl")
+  ) {
+    return { type: "m3u8", label: "HLS Stream (m3u8)", ext: "mp4", format: "mp4" };
+  }
+
+  // 2. DASH mpd manifest
+  if (
+    clean.endsWith(".mpd") ||
+    url.includes(".mpd?") ||
+    mimeType.includes("application/dash+xml")
+  ) {
+    return { type: "mpd", label: "DASH Stream (mpd)", ext: "mp4", format: "mp4" };
+  }
+
+  // 3. Direct video files
+  if (clean.endsWith(".mp4") || url.includes(".mp4?") || mimeType.includes("video/mp4")) {
+    return { type: "mp4", label: "Video MP4", ext: "mp4", format: "mp4" };
+  }
+  if (clean.endsWith(".webm") || url.includes(".webm?") || mimeType.includes("video/webm")) {
+    return { type: "webm", label: "Video WebM", ext: "mp4", format: "mp4" };
+  }
+  if (
+    clean.endsWith(".mkv") ||
+    clean.endsWith(".flv") ||
+    clean.endsWith(".m4v") ||
+    clean.endsWith(".mov") ||
+    mimeType.startsWith("video/")
+  ) {
+    return { type: "video", label: "Video", ext: "mp4", format: "mp4" };
+  }
+
+  // 4. Standalone audio files
+  if (
+    clean.endsWith(".mp3") ||
+    clean.endsWith(".m4a") ||
+    clean.endsWith(".aac") ||
+    clean.endsWith(".wav") ||
+    clean.endsWith(".flac") ||
+    clean.endsWith(".ogg") ||
+    mimeType.startsWith("audio/")
+  ) {
+    return { type: "audio", label: "Audio", ext: "mp3", format: "mp3" };
+  }
+
+  return null;
+}
+
+// Sniff headers of completed network requests
+chrome.webRequest.onHeadersReceived.addListener(
+  async (details) => {
+    const tabId = details.tabId;
+    if (tabId < 0) return;
+
+    let mimeType = "";
+    if (details.responseHeaders) {
+      const ct = details.responseHeaders.find(
+        (h) => h.name.toLowerCase() === "content-type"
+      );
+      if (ct && ct.value) {
+        mimeType = ct.value.toLowerCase();
+      }
+    }
+
+    const mediaInfo = detectMediaType(details.url, mimeType);
+    if (!mediaInfo) return;
+
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab) return;
+
+      // Skip internal YouTube chunks since HDM handles full YouTube pages natively
+      if (tab.url && (tab.url.includes("youtube.com") || tab.url.includes("youtu.be"))) {
+        return;
+      }
+
+      let list = capturedMediaByTab.get(tabId);
+      if (!list) {
+        list = [];
+        capturedMediaByTab.set(tabId, list);
+      }
+
+      // Deduplicate: avoid duplicate streams
+      const isDup = list.some((item) => item.url === details.url);
+      if (isDup) return;
+
+      // Clean title from tab or URL
+      let rawTitle = tab.title || "";
+      rawTitle = rawTitle
+        .replace(/\s*[-–|]\s*(Xem phim|Phim HD|Trang chủ|Official Website|Thuyết minh|Vietsub).*$/i, "")
+        .replace(/\s*[-–|]\s*YouTube$/i, "")
+        .trim();
+
+      if (!rawTitle) {
+        const uParts = details.url.split("/").pop().split("?")[0];
+        rawTitle = uParts.replace(/\.[a-zA-Z0-9]+$/, "") || "video";
+      }
+
+      const mediaItem = {
+        id: `${tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        url: details.url,
+        pageUrl: tab.url || "",
+        title: rawTitle,
+        type: mediaInfo.type,
+        label: mediaInfo.label,
+        ext: mediaInfo.ext,
+        format: mediaInfo.format,
+        timestamp: Date.now(),
+      };
+
+      list.unshift(mediaItem);
+      if (list.length > 25) list.pop();
+
+      // Update extension toolbar badge
+      chrome.action.setBadgeText({ tabId, text: String(list.length) });
+      chrome.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" });
+
+      // Notify content script in the tab
+      chrome.tabs.sendMessage(tabId, {
+        action: "hdm_media_detected",
+        media: mediaItem,
+        totalCount: list.length,
+      }).catch(() => {});
+    } catch (err) {
+      // Tab may have closed or navigated
+    }
+  },
+  { urls: ["<all_urls>"] },
+  ["responseHeaders"]
+);
+
+// Clean up captured media when a tab navigates or closes
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === "loading" && changeInfo.url) {
+    capturedMediaByTab.delete(tabId);
+    chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  capturedMediaByTab.delete(tabId);
 });
 
 // Setup Context Menus
@@ -193,7 +391,7 @@ function sanitizeFilename(name) {
 async function handleMediaDownload(data) {
   const targetUrl = data.url || data.pageUrl;
   const cookies = await getCookiesForUrl(targetUrl);
-  const ext = data.format === "mp3" ? "mp3" : "mp4";
+  const ext = data.format === "mp3" ? "mp3" : (data.ext || "mp4");
   const filename = data.title ? `${sanitizeFilename(data.title)}.${ext}` : "";
 
   const payload = {
@@ -232,6 +430,19 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     return true;
   } else if (req.action === "download_media") {
     handleMediaDownload(req.data).then(sendResponse);
+    return true;
+  } else if (req.action === "get_captured_media") {
+    const tabId = req.tabId || (sender && sender.tab && sender.tab.id);
+    const list = tabId ? (capturedMediaByTab.get(tabId) || []) : [];
+    sendResponse({ ok: true, media: list });
+    return true;
+  } else if (req.action === "clear_captured_media") {
+    const tabId = req.tabId || (sender && sender.tab && sender.tab.id);
+    if (tabId) {
+      capturedMediaByTab.delete(tabId);
+      chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+    }
+    sendResponse({ ok: true });
     return true;
   }
 });

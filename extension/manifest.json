@@ -2,14 +2,16 @@
   "manifest_version": 3,
   "name": "HDM — H2M Download Manager",
   "short_name": "HDM",
-  "version": "1.1.0",
-  "description": "Tiện ích tự động bắt liên kết tải và nút tải video trực tiếp trên YouTube và các trang web cho HDM.",
+  "version": "1.2.0",
+  "description": "Tiện ích tự động bắt liên kết tải, giám sát luồng phát video (HLS/m3u8, DASH) và nút tải video trực tiếp cho HDM.",
   "permissions": [
     "downloads",
     "storage",
     "contextMenus",
     "notifications",
-    "cookies"
+    "cookies",
+    "webRequest",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>",

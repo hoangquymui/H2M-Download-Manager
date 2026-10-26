@@ -30,6 +30,15 @@
   bottom: auto !important;
 }
 
+/* Positioned fixed on top-left of the screen when video is in an inaccessible cross-origin iframe */
+.hdm-btn-wrap.hdm-pos-fixed {
+  position: fixed !important;
+  top: 18px !important;
+  left: 18px !important;
+  right: auto !important;
+  bottom: auto !important;
+}
+
 /* 2. Ultra-Compact 28px Circular Download Button */
 .hdm-outside-btn {
   width: 28px !important;

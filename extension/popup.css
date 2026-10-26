@@ -150,3 +150,138 @@ input:checked + .slider:before {
 .btn-primary:hover {
   background-color: #89b4fa;
 }
+
+/* =========================================================================
+   Sniffed Media Card & Items
+   ========================================================================= */
+.media-card {
+  border-color: rgba(56, 189, 248, 0.3) !important;
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95)) !important;
+}
+
+.media-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.media-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.media-icon {
+  font-size: 13px;
+}
+
+.media-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: #38bdf8;
+}
+
+.media-count {
+  font-size: 11px;
+  font-weight: 700;
+  background-color: #2563eb;
+  color: #ffffff;
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.media-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.media-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.media-list::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 4px;
+}
+
+.media-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background-color: rgba(15, 23, 42, 0.7);
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.media-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.media-item-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.badge-stream {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  flex-shrink: 0;
+}
+
+.media-url {
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-dl-media {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  background-color: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.btn-dl-media:hover {
+  background-color: #1d4ed8;
+}
+
+.btn-dl-media svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+}
