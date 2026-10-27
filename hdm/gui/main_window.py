@@ -823,6 +823,8 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(50, lambda: self.show_confirm_download_dialog(next_req))
 
     def show_settings_dialog(self) -> None:
+        old_port = self.config.server_port
+        old_enabled = self.config.server_enabled
         old_lang = get_language()
         dlg = SettingsDialog(self.config_manager, parent=self)
         if dlg.exec():
@@ -831,6 +833,9 @@ class MainWindow(QMainWindow):
                 self.set_theme(saved_theme, persist=False)
             if get_language() != old_lang:
                 self.retranslate_ui()
+            # If server port or enabled state changed, reload server live
+            if (self.config.server_port != old_port or self.config.server_enabled != old_enabled) and hasattr(self, "engine_thread") and self.engine_thread:
+                self.engine_thread.update_server_config(self.config.server_port, self.config.server_enabled)
 
     def retranslate_ui(self) -> None:
         """Dynamically re-apply localized strings across all windows and controls."""

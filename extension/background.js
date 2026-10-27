@@ -388,13 +388,13 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   const res = await sendToHDM(payload);
   if (res && res.ok) {
-    showHDMWindow();
+    // Download request sent to HDM; modal will display on desktop without forcing main window
   } else {
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: "HDM Download Manager",
-      message: "Không thể kết nối với ứng dụng HDM. Vui lòng mở HDM trên máy tính của bạn.",
+      message: "Không thể kết nối với ứng dụng HDM. Vui lòng kiểm tra cổng kết nối hoặc mở HDM.",
     });
   }
 });
@@ -425,14 +425,14 @@ async function handleMediaDownload(data) {
 
   const res = await sendToHDM(payload);
   if (res && res.ok) {
-    showHDMWindow();
+    // Download request sent to HDM; modal will display on desktop without forcing main window
     return { ok: true };
   } else {
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: "HDM Download Manager",
-      message: "Không thể kết nối với ứng dụng HDM. Vui lòng mở HDM trên máy tính của bạn.",
+      message: "Không thể kết nối với ứng dụng HDM. Vui lòng kiểm tra cổng kết nối hoặc mở HDM.",
     });
     return { ok: false, error: "Cannot connect to HDM" };
   }

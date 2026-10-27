@@ -93,6 +93,34 @@ class AsyncEngineThread(QThread):
         if self.server:
             await self.server.stop()
 
+    def update_server_config(self, port: int, enabled: bool) -> None:
+        """Restart or reconfigure the HTTP integration server with new port/enabled state live."""
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._apply_server_config(port, enabled), self.loop)
+
+    async def _apply_server_config(self, port: int, enabled: bool) -> None:
+        if self.server:
+            try:
+                await self.server.stop()
+            except Exception as e:
+                logger.debug(f"Error stopping previous integration server: {e}")
+            self.server = None
+
+        if enabled:
+            try:
+                self.server = BrowserIntegrationServer(
+                    manager=self.manager,
+                    config_manager=self.config_manager,
+                    host="127.0.0.1",
+                    port=port,
+                    on_show_requested=self.on_show_window,
+                    on_download_requested=self.on_download_requested,
+                )
+                await self.server.start()
+                logger.info(f"HDM Browser Integration Server restarted on port {port}")
+            except Exception as e:
+                logger.error(f"Failed to restart integration server on port {port}: {e}")
+
     def stop(self) -> None:
         """Gracefully shut down the event loop."""
         if self.loop and self.loop.is_running():
@@ -155,6 +183,7 @@ def main() -> None:
 
     # 3. Initialize Main GUI Window
     main_window = MainWindow(download_mgr, config_mgr)
+    main_window.engine_thread = engine_thread
     engine_thread.on_show_window = lambda: main_window.bridge.show_window_signal.emit()
     engine_thread.on_download_requested = lambda payload: main_window.bridge.download_requested_signal.emit(payload)
 
