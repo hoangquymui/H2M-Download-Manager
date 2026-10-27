@@ -197,10 +197,13 @@ class SettingsDialog(QDialog):
             icon = str(spec["icon"])
             cat_name = str(spec["name_vi"] if is_vi else spec["name_en"])
             folder_name = str(spec["folder"])
-            label_text = tr("settings_cat_folder_label", icon=icon, name=cat_name, folder=folder_name)
+            if cat_name.strip().lower() == folder_name.strip().lower():
+                label_text = f"{icon}  {cat_name}:"
+            else:
+                label_text = tr("settings_cat_folder_label", icon=icon, name=cat_name, folder=folder_name)
 
             lbl = QLabel(label_text, grp_categories)
-            lbl.setStyleSheet("font-weight: 600; font-size: 12px; min-width: 230px;")
+            lbl.setStyleSheet("font-weight: 600; font-size: 12px; min-width: 195px;")
             grid_cats.addWidget(lbl, row_idx, 0)
 
             line_edit = QLineEdit(grp_categories)
