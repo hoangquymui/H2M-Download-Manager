@@ -14,7 +14,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hdm.core.config import Config, ConfigManager
 from hdm.core.models import Chunk, DownloadTask, TaskStatus
 from hdm.core.sparse_file import preallocate_file
-from hdm.utils.category import FileCategory, get_category_for_filename
+from hdm.utils.category import (
+    FileCategory,
+    get_category_for_filename,
+    get_category_subfolder,
+    set_custom_category_extensions,
+)
 from hdm.utils.formatters import clean_filename, extract_filename_from_url, format_bytes, format_speed
 
 
@@ -39,6 +44,16 @@ def test_categories():
     assert get_category_for_filename("music.mp3") == FileCategory.AUDIO
     assert get_category_for_filename("data.zip") == FileCategory.COMPRESSED
     assert get_category_for_filename("photo.jpg") == FileCategory.IMAGES
+    assert get_category_subfolder(FileCategory.PROGRAMS, "C:\\Downloads") == os.path.join("C:\\Downloads", "Programs")
+    assert get_category_subfolder(FileCategory.VIDEO, "C:\\Downloads") == os.path.join("C:\\Downloads", "Video")
+
+    # Test custom extension override
+    set_custom_category_extensions({"Programs": "exe, msi, custompkg"})
+    assert get_category_for_filename("app.custompkg") == FileCategory.PROGRAMS
+
+    # Reset back to default
+    set_custom_category_extensions(None)
+    assert get_category_for_filename("installer.msi") == FileCategory.PROGRAMS
     print("✅ test_categories passed!")
 
 

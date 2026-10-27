@@ -4,7 +4,7 @@ Refined modern horizontal navigation tabs with responsive pages.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStackedWidget,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from hdm.core.config import Config, ConfigManager
 from hdm.gui.style import apply_theme, normalize_theme
+from hdm.utils.category import CATEGORY_CONFIG_SPECS, DEFAULT_CATEGORY_EXTENSIONS
 from hdm.utils.i18n import normalize_language, set_language, tr
 
 
@@ -42,11 +44,12 @@ class SettingsDialog(QDialog):
         self.config = config_manager.config
         self._original_theme = normalize_theme(self.config.theme)
         self._original_lang = normalize_language(self.config.language)
+        self.category_inputs: Dict[str, QLineEdit] = {}
 
         self.setWindowTitle(tr("settings_dialog_title"))
-        self.setMinimumWidth(660)
-        self.setMinimumHeight(460)
-        self.resize(660, 480)
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(580)
+        self.resize(750, 785)
         self.setModal(True)
 
         self._init_ui()
@@ -112,14 +115,23 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _build_storage_page(self) -> QWidget:
-        page = QWidget()
-        page_layout = QVBoxLayout(page)
-        page_layout.setContentsMargins(4, 6, 4, 6)
-        page_layout.setSpacing(12)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
 
-        grp_storage = QGroupBox(tr("settings_grp_storage"), page)
+        container = QWidget()
+        container.setObjectName("storage_scroll_container")
+        container.setStyleSheet("#storage_scroll_container { background: transparent; }")
+        page_layout = QVBoxLayout(container)
+        page_layout.setContentsMargins(2, 2, 6, 2)
+        page_layout.setSpacing(10)
+
+        # 1. Main Storage GroupBox
+        grp_storage = QGroupBox(tr("settings_grp_storage"), container)
         grid_storage = QGridLayout(grp_storage)
-        grid_storage.setSpacing(10)
+        grid_storage.setSpacing(8)
 
         grid_storage.addWidget(QLabel(tr("settings_default_dir")), 0, 0)
         dir_row = QHBoxLayout()
@@ -133,7 +145,7 @@ class SettingsDialog(QDialog):
         btn_browse.setFixedWidth(75)
         btn_browse.clicked.connect(self._on_browse_clicked)
         dir_row.addWidget(btn_browse)
-        grid_storage.addLayout(dir_row, 0, 1)
+        grid_storage.addLayout(dir_row, 0, 1, 1, 3)
 
         grid_storage.addWidget(QLabel(tr("settings_connections")), 1, 0)
         self.conn_spin = QSpinBox(grp_storage)
@@ -141,27 +153,83 @@ class SettingsDialog(QDialog):
         self.conn_spin.setValue(self.config.default_connections)
         grid_storage.addWidget(self.conn_spin, 1, 1)
 
-        grid_storage.addWidget(QLabel(tr("settings_max_concurrent")), 2, 0)
+        grid_storage.addWidget(QLabel(tr("settings_max_concurrent")), 1, 2)
         self.max_tasks_spin = QSpinBox(grp_storage)
         self.max_tasks_spin.setRange(1, 10)
         self.max_tasks_spin.setValue(self.config.max_concurrent_tasks)
-        grid_storage.addWidget(self.max_tasks_spin, 2, 1)
+        grid_storage.addWidget(self.max_tasks_spin, 1, 3)
 
         self.chk_categorize = QCheckBox(tr("settings_chk_categorize"), grp_storage)
         self.chk_categorize.setChecked(self.config.auto_categorize)
-        grid_storage.addWidget(self.chk_categorize, 3, 0, 1, 2)
+        grid_storage.addWidget(self.chk_categorize, 2, 0, 1, 4)
 
         self.chk_autostart = QCheckBox(tr("settings_chk_autostart"), grp_storage)
         self.chk_autostart.setChecked(self.config.auto_start)
-        grid_storage.addWidget(self.chk_autostart, 4, 0, 1, 2)
+        grid_storage.addWidget(self.chk_autostart, 3, 0, 1, 4)
 
         self.chk_start_with_windows = QCheckBox(tr("settings_chk_start_with_windows"), grp_storage)
         self.chk_start_with_windows.setChecked(self.config.start_with_windows)
-        grid_storage.addWidget(self.chk_start_with_windows, 5, 0, 1, 2)
+        grid_storage.addWidget(self.chk_start_with_windows, 4, 0, 1, 4)
 
         page_layout.addWidget(grp_storage)
+
+        # 2. Category & File Extensions GroupBox
+        grp_categories = QGroupBox(tr("settings_grp_categories"), container)
+        cat_layout = QVBoxLayout(grp_categories)
+        cat_layout.setSpacing(8)
+        cat_layout.setContentsMargins(12, 10, 12, 10)
+
+        lbl_cat_hint = QLabel(tr("settings_categories_hint"), grp_categories)
+        lbl_cat_hint.setWordWrap(True)
+        lbl_cat_hint.setStyleSheet("color: #64748b; font-size: 11px; margin-bottom: 2px;")
+        cat_layout.addWidget(lbl_cat_hint)
+
+        grid_cats = QGridLayout()
+        grid_cats.setSpacing(6)
+        grid_cats.setColumnStretch(0, 0)
+        grid_cats.setColumnStretch(1, 1)
+
+        self.category_inputs.clear()
+        is_vi = normalize_language(self.config.language) == "vi"
+
+        for row_idx, spec in enumerate(CATEGORY_CONFIG_SPECS):
+            key = str(spec["key"])
+            icon = str(spec["icon"])
+            cat_name = str(spec["name_vi"] if is_vi else spec["name_en"])
+            folder_name = str(spec["folder"])
+            label_text = tr("settings_cat_folder_label", icon=icon, name=cat_name, folder=folder_name)
+
+            lbl = QLabel(label_text, grp_categories)
+            lbl.setStyleSheet("font-weight: 600; font-size: 12px; min-width: 230px;")
+            grid_cats.addWidget(lbl, row_idx, 0)
+
+            line_edit = QLineEdit(grp_categories)
+            current_val = (self.config.category_extensions or {}).get(key)
+            if not current_val:
+                current_val = str(spec["default"])
+            line_edit.setText(current_val)
+            line_edit.setPlaceholderText(str(spec["default"]))
+            grid_cats.addWidget(line_edit, row_idx, 1)
+
+            self.category_inputs[key] = line_edit
+
+        cat_layout.addLayout(grid_cats)
+
+        # Reset button row
+        reset_row = QHBoxLayout()
+        reset_row.addStretch()
+        btn_reset = QPushButton(tr("settings_btn_reset_categories"), grp_categories)
+        btn_reset.setObjectName("btn_secondary")
+        btn_reset.setCursor(Qt.PointingHandCursor)
+        btn_reset.clicked.connect(self._on_reset_categories_clicked)
+        reset_row.addWidget(btn_reset)
+        cat_layout.addLayout(reset_row)
+
+        page_layout.addWidget(grp_categories)
         page_layout.addStretch()
-        return page
+
+        scroll.setWidget(container)
+        return scroll
 
     def _build_browser_page(self) -> QWidget:
         page = QWidget()
@@ -265,6 +333,13 @@ class SettingsDialog(QDialog):
         set_language(self._original_lang)
         super().reject()
 
+    def _on_reset_categories_clicked(self) -> None:
+        """Reset all category extension inputs to their defaults."""
+        for spec in CATEGORY_CONFIG_SPECS:
+            key = str(spec["key"])
+            if key in self.category_inputs:
+                self.category_inputs[key].setText(str(spec["default"]))
+
     def _on_save_clicked(self) -> None:
         self.config.default_save_dir = self.dir_input.text().strip()
         self.config.default_connections = self.conn_spin.value()
@@ -277,6 +352,13 @@ class SettingsDialog(QDialog):
         self.config.start_with_windows = self.chk_start_with_windows.isChecked()
         self.config.theme = normalize_theme(self.theme_combo.currentData())
         self.config.language = normalize_language(self.lang_combo.currentData())
+
+        # Save customized category extensions
+        custom_cats: Dict[str, str] = {}
+        for key, input_field in self.category_inputs.items():
+            val = input_field.text().strip()
+            custom_cats[key] = val
+        self.config.category_extensions = custom_cats
 
         set_language(self.config.language)
         self.config_manager.save(self.config)

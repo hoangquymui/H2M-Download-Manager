@@ -124,20 +124,16 @@ class DownloadQueueManager:
             filename = extract_filename_from_url(url)
         filename = clean_filename(filename)
 
-        # Determine category with strict format & quality prioritization
+        # Determine category with format & quality prioritization
         final_category: FileCategory
         if category:
             try:
                 final_category = FileCategory(category)
             except ValueError:
                 final_category = get_category_for_filename(filename)
-        elif quality in ("128", "192", "320") or (
-            filename and filename.lower().endswith((".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus"))
-        ):
+        elif quality in ("128", "192", "320"):
             final_category = FileCategory.AUDIO
-        elif quality in ("1080", "720", "480", "360") or (
-            filename and filename.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv"))
-        ):
+        elif quality in ("1080", "720", "480", "360"):
             final_category = FileCategory.VIDEO
         elif is_streaming_url(url):
             final_category = FileCategory.VIDEO

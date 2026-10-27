@@ -160,6 +160,7 @@ class BrowserIntegrationServer:
                             "headers": custom_headers,
                             "quality": quality,
                             "category": category,
+                            "is_captured": True,
                         }
                         self.on_download_requested(req_data)
                         self._send_json(writer, {"ok": True, "mode": "dialog"})

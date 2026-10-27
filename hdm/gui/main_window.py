@@ -776,7 +776,8 @@ class MainWindow(QMainWindow):
             self._pending_download_requests.append(data)
             return
 
-        self.show_and_raise()
+        if not is_captured:
+            self.show_and_raise()
 
         dlg = AddDownloadDialog(
             config=self.config,
@@ -785,10 +786,22 @@ class MainWindow(QMainWindow):
             custom_headers=headers,
             is_captured=is_captured,
             initial_quality=quality,
-            parent=self,
+            parent=None if is_captured else self,
         )
         self._active_confirm_dialog = dlg
         try:
+            if is_captured:
+                from PySide6.QtGui import QCursor
+                dlg.adjustSize()
+                screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+                if screen:
+                    screen_geom = screen.availableGeometry()
+                    x = screen_geom.x() + (screen_geom.width() - dlg.width()) // 2
+                    y = screen_geom.y() + (screen_geom.height() - dlg.height()) // 2
+                    dlg.move(x, y)
+                dlg.raise_()
+                dlg.activateWindow()
+
             if dlg.exec():
                 res = dlg.get_result_data()
                 self.manager.add_task(
@@ -801,7 +814,8 @@ class MainWindow(QMainWindow):
                     quality=res.get("quality", ""),
                     category=res.get("category"),
                 )
-                self.show_and_raise()
+                if not is_captured:
+                    self.show_and_raise()
         finally:
             self._active_confirm_dialog = None
             if self._pending_download_requests:

@@ -36,6 +36,7 @@ class Config:
     start_with_windows: bool = False    # Auto-start with Windows on boot
     show_download_dialog: bool = True   # Show IDM-style confirmation modal on link capture
     speed_limit_kbps: int = 0           # 0 = unlimited
+    category_extensions: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -61,11 +62,15 @@ class ConfigManager:
                     data = json.load(f)
                     cfg = Config.from_dict(data)
                     set_language(cfg.language)
+                    from hdm.utils.category import set_custom_category_extensions
+                    set_custom_category_extensions(cfg.category_extensions)
                     return cfg
             except Exception:
                 pass
         config = Config()
         set_language(config.language)
+        from hdm.utils.category import set_custom_category_extensions
+        set_custom_category_extensions(config.category_extensions)
         self.save(config)
         return config
 
@@ -73,6 +78,11 @@ class ConfigManager:
         if config is not None:
             self.config = config
         set_language(self.config.language)
+        try:
+            from hdm.utils.category import set_custom_category_extensions
+            set_custom_category_extensions(self.config.category_extensions)
+        except Exception:
+            pass
         try:
             from hdm.utils.system import set_autostart
             set_autostart(self.config.start_with_windows)
