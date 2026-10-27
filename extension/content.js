@@ -73,27 +73,18 @@
       if (ytPlayer) return ytPlayer;
     }
 
+    // Check if video is inside a known movie/video player wrapper
+    const known = video.closest(
+      "#halim-player-wrapper, #ajax-player-hh3d, .playerjs-mount-slot, .halim-player-aspect, .halim-playerjs-host, #player, .player, .artplayer-app, .dplayer, .jwplayer, .video-js, .watch-player, .film-player"
+    );
+    if (known) return known;
+
     let container = video.parentElement;
-    while (container && container !== document.body) {
-      const style = window.getComputedStyle(container);
-      if (
-        style.overflow !== "hidden" &&
-        style.overflowY !== "hidden" &&
-        container.offsetWidth >= 160
-      ) {
-        return container;
-      }
-      if (container.parentElement === document.body) break;
-      container = container.parentElement;
+    if (container && container !== document.body) {
+      return container;
     }
 
-    const target = container || video.parentElement || video;
-    if (target && target !== document.body) {
-      try {
-        target.style.setProperty("overflow", "visible", "important");
-      } catch (e) {}
-    }
-    return target;
+    return video.parentElement || video;
   }
 
   function showToast(msg, isError) {
@@ -195,9 +186,6 @@
               sourceBtn.setAttribute("title", "Tải video này với HDM");
             }, 2500);
           }
-          const qText = qualityType ? (formatType === "mp3" ? `${qualityType} kbps` : `${qualityType}p`) : "";
-          const desc = formatType === "mp3" ? `MP3 ${qText}`.trim() : (qText ? `MP4 ${qText}` : "MP4");
-          showToast(`✓ Đã gửi lệnh tải (${desc}) tới HDM! Vui lòng xác nhận trên HDM.`, false);
         }
       }
     );
@@ -436,6 +424,8 @@
     chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
       if (!settings.enableVideoPanel) return;
 
+      lastSniffedMedia = media;
+
       if (document.querySelector(".hdm-btn-wrap")) {
         return;
       }
@@ -443,24 +433,30 @@
       // 1. Try to find player container or iframe
       let container = null;
       const playerSelectors = [
+        "#halim-player-wrapper",
+        "#ajax-player-hh3d",
+        ".playerjs-mount-slot",
+        ".halim-player-aspect",
+        ".halim-playerjs-host",
         "#player",
         ".player",
-        "#halim-player-wrapper",
-        ".halim-player-wrapper",
         ".watch-player",
         ".film-player",
         "#video-player",
         ".video-player",
         ".artplayer-app",
         ".dplayer",
+        ".jwplayer",
+        ".video-js",
+        "video",
         "iframe[src*='player']",
         "iframe[src*='embed']",
         "iframe[src*='video']",
       ];
       for (const sel of playerSelectors) {
         const el = document.querySelector(sel);
-        if (el && el.offsetWidth > 160 && el.offsetHeight > 100) {
-          container = el.parentElement && el.parentElement !== document.body ? el.parentElement : el;
+        if (el) {
+          container = el;
           break;
         }
       }
@@ -469,7 +465,7 @@
         // Fallback: look for any visible large iframe
         const iframes = document.querySelectorAll("iframe");
         for (const ifr of iframes) {
-          if (ifr.offsetWidth > 240 && ifr.offsetHeight > 150) {
+          if (ifr.offsetWidth > 160 && ifr.offsetHeight > 100) {
             container = ifr.parentElement && ifr.parentElement !== document.body ? ifr.parentElement : ifr;
             break;
           }

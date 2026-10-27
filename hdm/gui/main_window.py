@@ -464,13 +464,13 @@ class MainWindow(QMainWindow):
             "status_completed": sum(1 for t in all_tasks if t.status == TaskStatus.COMPLETED),
             "status_paused": sum(1 for t in all_tasks if t.status == TaskStatus.PAUSED),
             "status_error": sum(1 for t in all_tasks if t.status == TaskStatus.ERROR),
-            "cat_compressed": sum(1 for t in all_tasks if t.category in (FileCategory.COMPRESSED.value, "Compressed")),
-            "cat_programs": sum(1 for t in all_tasks if t.category in (FileCategory.PROGRAMS.value, "Programs")),
+            "cat_compressed": sum(1 for t in all_tasks if t.category in (FileCategory.COMPRESSED.value, "Compressed", "Nén", "Tệp nén")),
+            "cat_programs": sum(1 for t in all_tasks if t.category in (FileCategory.PROGRAMS.value, "Programs", "Phần mềm", "Chương trình")),
             "cat_video": sum(1 for t in all_tasks if t.category in (FileCategory.VIDEO.value, "Video")),
-            "cat_audio": sum(1 for t in all_tasks if t.category in (FileCategory.AUDIO.value, "Audio")),
-            "cat_docs": sum(1 for t in all_tasks if t.category in (FileCategory.DOCUMENTS.value, "Documents")),
-            "cat_images": sum(1 for t in all_tasks if t.category in (FileCategory.IMAGES.value, "Images")),
-            "cat_others": sum(1 for t in all_tasks if t.category in (FileCategory.OTHERS.value, "Others")),
+            "cat_audio": sum(1 for t in all_tasks if t.category in (FileCategory.AUDIO.value, "Audio", "Music", "Âm nhạc", "Nhạc")),
+            "cat_docs": sum(1 for t in all_tasks if t.category in (FileCategory.DOCUMENTS.value, "Documents", "Tài liệu")),
+            "cat_images": sum(1 for t in all_tasks if t.category in (FileCategory.IMAGES.value, "Images", "Pictures", "Hình ảnh")),
+            "cat_others": sum(1 for t in all_tasks if t.category in (FileCategory.OTHERS.value, "Others", "Other", "Khác")),
         }
         for i in range(self.sidebar.count()):
             item = self.sidebar.item(i)
@@ -988,13 +988,13 @@ class MainWindow(QMainWindow):
             tasks = [
                 t for t in tasks
                 if t.category == cat_val or
-                   (cat_val == FileCategory.COMPRESSED.value and t.category == "Compressed") or
-                   (cat_val == FileCategory.PROGRAMS.value and t.category == "Programs") or
-                   (cat_val == FileCategory.VIDEO.value and t.category == "Video") or
-                   (cat_val == FileCategory.AUDIO.value and t.category == "Audio") or
-                   (cat_val == FileCategory.DOCUMENTS.value and t.category == "Documents") or
-                   (cat_val == FileCategory.IMAGES.value and t.category == "Images") or
-                   (cat_val == FileCategory.OTHERS.value and t.category == "Others")
+                   (cat_val == FileCategory.COMPRESSED.value and t.category in ("Compressed", "Nén", "Tệp nén")) or
+                   (cat_val == FileCategory.PROGRAMS.value and t.category in ("Programs", "Phần mềm", "Chương trình")) or
+                   (cat_val == FileCategory.VIDEO.value and t.category in ("Video",)) or
+                   (cat_val == FileCategory.AUDIO.value and t.category in ("Audio", "Music", "Âm nhạc", "Nhạc")) or
+                   (cat_val == FileCategory.DOCUMENTS.value and t.category in ("Documents", "Tài liệu")) or
+                   (cat_val == FileCategory.IMAGES.value and t.category in ("Images", "Pictures", "Hình ảnh")) or
+                   (cat_val == FileCategory.OTHERS.value and t.category in ("Others", "Other", "Khác"))
             ]
         if self.search_query:
             tasks = [

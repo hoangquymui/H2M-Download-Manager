@@ -45,11 +45,12 @@ class SettingsDialog(QDialog):
         self._original_theme = normalize_theme(self.config.theme)
         self._original_lang = normalize_language(self.config.language)
         self.category_inputs: Dict[str, QLineEdit] = {}
+        self.folder_inputs: Dict[str, QLineEdit] = {}
 
         self.setWindowTitle(tr("settings_dialog_title"))
-        self.setMinimumWidth(680)
-        self.setMinimumHeight(580)
-        self.resize(750, 785)
+        self.setMinimumWidth(720)
+        self.setMinimumHeight(600)
+        self.resize(800, 840)
         self.setModal(True)
 
         self._init_ui()
@@ -176,7 +177,7 @@ class SettingsDialog(QDialog):
         # 2. Category & File Extensions GroupBox
         grp_categories = QGroupBox(tr("settings_grp_categories"), container)
         cat_layout = QVBoxLayout(grp_categories)
-        cat_layout.setSpacing(8)
+        cat_layout.setSpacing(6)
         cat_layout.setContentsMargins(12, 10, 12, 10)
 
         lbl_cat_hint = QLabel(tr("settings_categories_hint"), grp_categories)
@@ -187,34 +188,70 @@ class SettingsDialog(QDialog):
         grid_cats = QGridLayout()
         grid_cats.setSpacing(6)
         grid_cats.setColumnStretch(0, 0)
-        grid_cats.setColumnStretch(1, 1)
+        grid_cats.setColumnStretch(1, 0)
+        grid_cats.setColumnStretch(2, 1)
+
+        # Table Header Row
+        hdr_type = QLabel(tr("settings_cat_col_type"), grp_categories)
+        hdr_type.setStyleSheet("font-weight: 700; font-size: 12px; min-width: 95px; color: #94a3b8;")
+        grid_cats.addWidget(hdr_type, 0, 0)
+
+        hdr_folder = QLabel(tr("settings_cat_col_folder"), grp_categories)
+        hdr_folder.setStyleSheet("font-weight: 700; font-size: 12px; min-width: 125px; color: #94a3b8;")
+        grid_cats.addWidget(hdr_folder, 0, 1)
+
+        hdr_ext = QLabel(tr("settings_cat_col_ext"), grp_categories)
+        hdr_ext.setStyleSheet("font-weight: 700; font-size: 12px; color: #94a3b8;")
+        grid_cats.addWidget(hdr_ext, 0, 2)
 
         self.category_inputs.clear()
+        self.folder_inputs.clear()
         is_vi = normalize_language(self.config.language) == "vi"
 
-        for row_idx, spec in enumerate(CATEGORY_CONFIG_SPECS):
+        for row_idx, spec in enumerate(CATEGORY_CONFIG_SPECS, start=1):
             key = str(spec["key"])
-            icon = str(spec["icon"])
             cat_name = str(spec["name_vi"] if is_vi else spec["name_en"])
-            folder_name = str(spec["folder"])
-            if cat_name.strip().lower() == folder_name.strip().lower():
-                label_text = f"{icon}  {cat_name}:"
-            else:
-                label_text = tr("settings_cat_folder_label", icon=icon, name=cat_name, folder=folder_name)
+            default_folder = str(spec["default_folder"])
+            default_ext = str(spec["default"])
 
-            lbl = QLabel(label_text, grp_categories)
-            lbl.setStyleSheet("font-weight: 600; font-size: 12px; min-width: 195px;")
-            grid_cats.addWidget(lbl, row_idx, 0)
+            # 1. Col: Loại
+            lbl_type = QLabel(cat_name, grp_categories)
+            lbl_type.setStyleSheet("font-weight: 600; font-size: 12px; min-width: 95px;")
+            grid_cats.addWidget(lbl_type, row_idx, 0)
 
-            line_edit = QLineEdit(grp_categories)
-            current_val = (self.config.category_extensions or {}).get(key)
-            if not current_val:
-                current_val = str(spec["default"])
-            line_edit.setText(current_val)
-            line_edit.setPlaceholderText(str(spec["default"]))
-            grid_cats.addWidget(line_edit, row_idx, 1)
+            # 2. Col: Tên thư mục (editable QLineEdit)
+            edit_folder = QLineEdit(grp_categories)
+            edit_folder.setMinimumWidth(110)
+            edit_folder.setMaximumWidth(150)
+            current_folder = (self.config.category_folders or {}).get(key, "")
+            if not current_folder and key == "Music":
+                current_folder = (self.config.category_folders or {}).get("Audio", "")
+            if not current_folder and key == "Pictures":
+                current_folder = (self.config.category_folders or {}).get("Images", "")
+            if not current_folder and key == "Other":
+                current_folder = (self.config.category_folders or {}).get("Others", "")
+            if not current_folder:
+                current_folder = default_folder
+            edit_folder.setText(current_folder)
+            edit_folder.setPlaceholderText(default_folder)
+            grid_cats.addWidget(edit_folder, row_idx, 1)
+            self.folder_inputs[key] = edit_folder
 
-            self.category_inputs[key] = line_edit
+            # 3. Col: Các đuôi tệp (editable QLineEdit)
+            edit_ext = QLineEdit(grp_categories)
+            current_ext = (self.config.category_extensions or {}).get(key)
+            if current_ext is None and key == "Music":
+                current_ext = (self.config.category_extensions or {}).get("Audio")
+            if current_ext is None and key == "Pictures":
+                current_ext = (self.config.category_extensions or {}).get("Images")
+            if current_ext is None and key == "Other":
+                current_ext = (self.config.category_extensions or {}).get("Others")
+            if current_ext is None:
+                current_ext = default_ext
+            edit_ext.setText(current_ext)
+            edit_ext.setPlaceholderText(default_ext)
+            grid_cats.addWidget(edit_ext, row_idx, 2)
+            self.category_inputs[key] = edit_ext
 
         cat_layout.addLayout(grid_cats)
 
@@ -337,11 +374,13 @@ class SettingsDialog(QDialog):
         super().reject()
 
     def _on_reset_categories_clicked(self) -> None:
-        """Reset all category extension inputs to their defaults."""
+        """Reset all category folder names and extensions to their defaults."""
         for spec in CATEGORY_CONFIG_SPECS:
             key = str(spec["key"])
             if key in self.category_inputs:
                 self.category_inputs[key].setText(str(spec["default"]))
+            if key in self.folder_inputs:
+                self.folder_inputs[key].setText(str(spec["default_folder"]))
 
     def _on_save_clicked(self) -> None:
         self.config.default_save_dir = self.dir_input.text().strip()
@@ -362,6 +401,18 @@ class SettingsDialog(QDialog):
             val = input_field.text().strip()
             custom_cats[key] = val
         self.config.category_extensions = custom_cats
+
+        # Save customized category folders
+        custom_folders: Dict[str, str] = {}
+        for key, input_field in self.folder_inputs.items():
+            folder_val = input_field.text().strip()
+            if folder_val:
+                custom_folders[key] = folder_val
+        self.config.category_folders = custom_folders
+
+        from hdm.utils.category import set_custom_category_extensions, set_custom_category_folders
+        set_custom_category_extensions(self.config.category_extensions)
+        set_custom_category_folders(self.config.category_folders)
 
         set_language(self.config.language)
         self.config_manager.save(self.config)

@@ -82,10 +82,10 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
 
         # Sidebar Category Filters
         "sidebar_header_category": "DANH MỤC TỆP",
-        "cat_compressed": "Nén",
-        "cat_programs": "Phần mềm",
+        "cat_compressed": "Tệp nén",
+        "cat_programs": "Chương trình",
         "cat_video": "Video",
-        "cat_audio": "Âm nhạc",
+        "cat_audio": "Nhạc",
         "cat_docs": "Tài liệu",
         "cat_images": "Hình ảnh",
         "cat_others": "Khác",
@@ -220,6 +220,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "settings_categories_hint": "Nhập các đuôi tệp tương ứng cho từng nhóm (phân cách bằng dấu phẩy). Khi bật tính năng tự động phân loại, tệp tải về sẽ tự động chuyển vào thư mục tương ứng.",
         "settings_btn_reset_categories": "Khôi phục mặc định",
         "settings_cat_folder_label": "{icon}  {name} ({folder}):",
+        "settings_cat_col_type": "Loại",
+        "settings_cat_col_folder": "Tên thư mục",
+        "settings_cat_col_ext": "Các đuôi tệp",
         "settings_grp_browser": "🌐 Tích hợp Trình duyệt && Kết nối",
         "settings_port": "Cổng kết nối nội bộ (HTTP):",
         "settings_chk_server": "Bật dịch vụ nhận link tự động từ Extension (Chrome, Edge, Cốc Cốc, Brave)",
@@ -308,8 +311,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "cat_video": "Video",
         "cat_audio": "Music",
         "cat_docs": "Documents",
-        "cat_images": "Images",
-        "cat_others": "Others",
+        "cat_images": "Pictures",
+        "cat_others": "Other",
 
         # Page Header & Stats
         "page_all_title": "All Downloads",
@@ -441,6 +444,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "settings_categories_hint": "Specify file extensions mapped to each category (separated by comma). When auto-categorization is enabled, downloaded files are automatically placed into the corresponding folder.",
         "settings_btn_reset_categories": "Reset Defaults",
         "settings_cat_folder_label": "{icon}  {name} ({folder}):",
+        "settings_cat_col_type": "Category",
+        "settings_cat_col_folder": "Folder name",
+        "settings_cat_col_ext": "File extensions",
         "settings_grp_browser": "🌐 Browser Integration && Connection",
         "settings_port": "Internal HTTP port:",
         "settings_chk_server": "Enable browser extension integration (Chrome, Edge, Cốc Cốc, Brave)",
@@ -546,9 +552,12 @@ def get_category_display(category: Any) -> str:
         category = category.value
     mapping = {
         "Nén": "cat_compressed",
+        "Tệp nén": "cat_compressed",
         "Phần mềm": "cat_programs",
+        "Chương trình": "cat_programs",
         "Video": "cat_video",
         "Âm nhạc": "cat_audio",
+        "Nhạc": "cat_audio",
         "Tài liệu": "cat_docs",
         "Hình ảnh": "cat_images",
         "Khác": "cat_others",
@@ -556,9 +565,12 @@ def get_category_display(category: Any) -> str:
         "Programs": "cat_programs",
         "Video": "cat_video",
         "Audio": "cat_audio",
+        "Music": "cat_audio",
         "Documents": "cat_docs",
         "Images": "cat_images",
+        "Pictures": "cat_images",
         "Others": "cat_others",
+        "Other": "cat_others",
     }
     cat_str = str(category)
     key = mapping.get(cat_str)

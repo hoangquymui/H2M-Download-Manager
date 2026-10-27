@@ -1,5 +1,5 @@
 """File categorization module for HDM.
-Categorizes downloads based on file extensions.
+Categorizes downloads based on file extensions and manages category subfolders.
 """
 
 from __future__ import annotations
@@ -11,81 +11,84 @@ from typing import Any, Dict, List, Set
 
 class FileCategory(str, Enum):
     ALL = "Tất cả"
-    COMPRESSED = "Nén"
-    PROGRAMS = "Phần mềm"
     VIDEO = "Video"
-    AUDIO = "Âm nhạc"
+    AUDIO = "Nhạc"
+    COMPRESSED = "Tệp nén"
     DOCUMENTS = "Tài liệu"
+    PROGRAMS = "Chương trình"
     IMAGES = "Hình ảnh"
     OTHERS = "Khác"
 
 
-CATEGORY_TO_FOLDER: Dict[FileCategory, str] = {
-    FileCategory.COMPRESSED: "Compressed",
-    FileCategory.PROGRAMS: "Programs",
-    FileCategory.VIDEO: "Video",
-    FileCategory.AUDIO: "Audio",
-    FileCategory.DOCUMENTS: "Documents",
-    FileCategory.IMAGES: "Images",
-    FileCategory.OTHERS: "Others",
-}
-
 CATEGORY_CONFIG_SPECS: List[Dict[str, Any]] = [
-    {
-        "key": "Programs",
-        "category": FileCategory.PROGRAMS,
-        "folder": "Programs",
-        "icon": "💻",
-        "name_vi": "Phần mềm",
-        "name_en": "Programs",
-        "default": "exe, msi, msix, bat, cmd, ps1, sh, bin, apk, appx, jar, appimage, run, deb, rpm, pkg",
-    },
     {
         "key": "Video",
         "category": FileCategory.VIDEO,
-        "folder": "Video",
+        "default_folder": "Video",
         "icon": "🎬",
         "name_vi": "Video",
         "name_en": "Video",
-        "default": "mp4, mkv, avi, mov, wmv, flv, webm, m4v, ts, m3u8, 3gp, vob, ogv, divx, rmvb",
+        "default": "mp4 mkv avi mov wmv flv webm m4v mpg mpeg 3gp ts m2ts vob",
     },
     {
-        "key": "Audio",
+        "key": "Music",
         "category": FileCategory.AUDIO,
-        "folder": "Audio",
+        "default_folder": "Music",
         "icon": "🎵",
-        "name_vi": "Âm nhạc",
-        "name_en": "Audio",
-        "default": "mp3, wav, flac, aac, ogg, m4a, wma, opus, aiff, mid, midi, mka",
+        "name_vi": "Nhạc",
+        "name_en": "Music",
+        "default": "mp3 m4a flac wav aac ogg wma opus ape alac",
     },
     {
         "key": "Compressed",
         "category": FileCategory.COMPRESSED,
-        "folder": "Compressed",
+        "default_folder": "Compressed",
         "icon": "📦",
-        "name_vi": "Tập tin nén",
+        "name_vi": "Tệp nén",
         "name_en": "Compressed",
-        "default": "zip, rar, 7z, tar, gz, bz2, xz, zst, iso, img, cab, tgz, tbz2, lz, lzma, lzh, arj, dmg",
+        "default": "zip rar 7z gz tar bz2 xz tgz iso img cab zst",
     },
     {
         "key": "Documents",
         "category": FileCategory.DOCUMENTS,
-        "folder": "Documents",
+        "default_folder": "Documents",
         "icon": "📄",
         "name_vi": "Tài liệu",
         "name_en": "Documents",
-        "default": "pdf, doc, docx, xls, xlsx, ppt, pptx, txt, rtf, odt, ods, odp, csv, epub, mobi, md, json, xml",
+        "default": "pdf doc docx xls xlsx ppt pptx txt rtf odt ods odp epub csv",
     },
     {
-        "key": "Images",
+        "key": "Programs",
+        "category": FileCategory.PROGRAMS,
+        "default_folder": "Programs",
+        "icon": "💻",
+        "name_vi": "Chương trình",
+        "name_en": "Programs",
+        "default": "exe msi apk dmg bin appx msix xapk jar deb rpm",
+    },
+    {
+        "key": "Pictures",
         "category": FileCategory.IMAGES,
-        "folder": "Images",
+        "default_folder": "Pictures",
         "icon": "🖼️",
         "name_vi": "Hình ảnh",
-        "name_en": "Images",
-        "default": "jpg, jpeg, png, gif, bmp, webp, svg, ico, tiff, tif, raw, psd, ai",
+        "name_en": "Pictures",
+        "default": "jpg jpeg png gif bmp webp tif tiff svg psd heic",
+    },
+    {
+        "key": "Other",
+        "category": FileCategory.OTHERS,
+        "default_folder": "Other",
+        "icon": "📂",
+        "name_vi": "Khác",
+        "name_en": "Other",
+        "default": "",
     },
 ]
+
+DEFAULT_CATEGORY_FOLDERS: Dict[str, str] = {
+    str(spec["key"]): str(spec["default_folder"]) for spec in CATEGORY_CONFIG_SPECS
+}
 
 DEFAULT_CATEGORY_EXTENSIONS: Dict[str, str] = {
     str(spec["key"]): str(spec["default"]) for spec in CATEGORY_CONFIG_SPECS
@@ -96,9 +99,9 @@ def parse_extensions_string(ext_str: str) -> Set[str]:
     """Parse comma/space/semicolon separated extension list into normalized set."""
     if not ext_str:
         return set()
-    cleaned = ext_str.replace(";", ",").replace(" ", ",")
+    cleaned = ext_str.replace(";", " ").replace(",", " ")
     result = set()
-    for item in cleaned.split(","):
+    for item in cleaned.split():
         ext = item.strip().lower().lstrip(".")
         if ext:
             result.add(ext)
@@ -106,15 +109,47 @@ def parse_extensions_string(ext_str: str) -> Set[str]:
 
 
 def normalize_extension_string(ext_str: str) -> str:
-    """Normalize extension string into a sorted comma-separated string."""
+    """Normalize extension string into a sorted space-separated string."""
     parts = parse_extensions_string(ext_str)
-    return ", ".join(sorted(parts))
+    return " ".join(sorted(parts))
 
 
 CATEGORY_EXTENSIONS: Dict[FileCategory, Set[str]] = {
     spec["category"]: parse_extensions_string(spec["default"])
     for spec in CATEGORY_CONFIG_SPECS
 }
+
+CATEGORY_FOLDERS: Dict[FileCategory, str] = {
+    spec["category"]: str(spec["default_folder"])
+    for spec in CATEGORY_CONFIG_SPECS
+}
+
+# Backward compatibility alias
+CATEGORY_TO_FOLDER: Dict[FileCategory, str] = CATEGORY_FOLDERS
+
+
+def set_custom_category_folders(custom_map: Dict[str, str] | None = None) -> None:
+    """Update active CATEGORY_FOLDERS based on custom folder mappings."""
+    custom_map = custom_map or {}
+    for spec in CATEGORY_CONFIG_SPECS:
+        key = str(spec["key"])
+        cat: FileCategory = spec["category"]
+        folder = (
+            custom_map.get(key)
+            or custom_map.get(cat.value)
+            or custom_map.get(key.lower())
+            or (custom_map.get("Audio") if key == "Music" else None)
+            or (custom_map.get("Âm nhạc") if key == "Music" else None)
+            or (custom_map.get("Images") if key == "Pictures" else None)
+            or (custom_map.get("Others") if key == "Other" else None)
+            or spec["default_folder"]
+        )
+        CATEGORY_FOLDERS[cat] = str(folder).strip() or spec["default_folder"]
+
+
+def get_category_folder_name(category: FileCategory) -> str:
+    """Get the active folder name for a given category."""
+    return CATEGORY_FOLDERS.get(category, "Other")
 
 
 def set_custom_category_extensions(custom_map: Dict[str, str] | None = None) -> None:
@@ -127,19 +162,23 @@ def set_custom_category_extensions(custom_map: Dict[str, str] | None = None) -> 
             custom_map.get(key)
             or custom_map.get(cat.value)
             or custom_map.get(key.lower())
+            or (custom_map.get("Audio") if key == "Music" else None)
+            or (custom_map.get("Âm nhạc") if key == "Music" else None)
+            or (custom_map.get("Images") if key == "Pictures" else None)
+            or (custom_map.get("Others") if key == "Other" else None)
             or spec["default"]
         )
         CATEGORY_EXTENSIONS[cat] = parse_extensions_string(raw)
 
 
 def get_active_category_extensions() -> Dict[str, str]:
-    """Get active extensions mapped by folder key."""
+    """Get active extensions mapped by category key."""
     result = {}
     for spec in CATEGORY_CONFIG_SPECS:
         key = str(spec["key"])
         cat: FileCategory = spec["category"]
         ext_set = CATEGORY_EXTENSIONS.get(cat, set())
-        result[key] = ", ".join(sorted(ext_set))
+        result[key] = " ".join(sorted(ext_set))
     return result
 
 
@@ -164,5 +203,5 @@ def get_category_for_filename(filename: str) -> FileCategory:
 
 def get_category_subfolder(category: FileCategory, base_dir: str) -> str:
     """Get the target subfolder path for a given category under base_dir."""
-    subname = CATEGORY_TO_FOLDER.get(category, "Others")
+    subname = get_category_folder_name(category)
     return os.path.join(base_dir, subname)

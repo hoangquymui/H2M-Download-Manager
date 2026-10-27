@@ -19,6 +19,7 @@ from hdm.utils.category import (
     get_category_for_filename,
     get_category_subfolder,
     set_custom_category_extensions,
+    set_custom_category_folders,
 )
 from hdm.utils.formatters import clean_filename, extract_filename_from_url, format_bytes, format_speed
 
@@ -51,9 +52,16 @@ def test_categories():
     set_custom_category_extensions({"Programs": "exe, msi, custompkg"})
     assert get_category_for_filename("app.custompkg") == FileCategory.PROGRAMS
 
+    # Test custom folder override
+    set_custom_category_folders({"Music": "MyCustomMusic", "Other": "MyOther"})
+    assert get_category_subfolder(FileCategory.AUDIO, "C:\\Downloads") == os.path.join("C:\\Downloads", "MyCustomMusic")
+    assert get_category_subfolder(FileCategory.OTHERS, "C:\\Downloads") == os.path.join("C:\\Downloads", "MyOther")
+
     # Reset back to default
     set_custom_category_extensions(None)
+    set_custom_category_folders(None)
     assert get_category_for_filename("installer.msi") == FileCategory.PROGRAMS
+    assert get_category_subfolder(FileCategory.AUDIO, "C:\\Downloads") == os.path.join("C:\\Downloads", "Music")
     print("✅ test_categories passed!")
 
 
