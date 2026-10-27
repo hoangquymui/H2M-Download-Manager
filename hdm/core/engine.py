@@ -254,6 +254,7 @@ class DownloadEngine:
                 logger.debug(f"yt_dlp streaming probe exception: {e}")
 
         headers = dict(self.task.headers)
+        headers.setdefault("Accept-Encoding", "identity")
         probe_success = False
 
         # 1. First attempt HEAD request
@@ -302,7 +303,7 @@ class DownloadEngine:
     def _extract_metadata(self, response: httpx.Response) -> None:
         """Extract size, ETag, Range support, and filename from response headers."""
         headers = response.headers
-        cl = headers.get("content-length")
+        cl = headers.get("x-identity-content-length") or headers.get("content-length")
         if cl:
             try:
                 self.task.total_bytes = int(cl)
@@ -583,8 +584,15 @@ class DownloadEngine:
 
         timeout = httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=45.0)
         limits = httpx.Limits(max_connections=64, max_keepalive_connections=32, keepalive_expiry=30.0)
+        default_headers = {"Accept-Encoding": "identity"}
 
-        async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True, http2=True) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            headers=default_headers,
+            follow_redirects=True,
+            http2=True,
+        ) as client:
             # 1. Probe server metadata if not yet known
             if self.task.total_bytes <= 0:
                 success = await self.probe(client)
@@ -880,6 +888,7 @@ class DownloadEngine:
     async def _download_chunk(self, client: httpx.AsyncClient, chunk: Chunk) -> None:
         """Download assigned byte range and stream into non-blocking disk writer."""
         headers = dict(self.task.headers)
+        headers.setdefault("Accept-Encoding", "identity")
         if self.task.supports_range and chunk.end_byte >= chunk.current_pos:
             headers["Range"] = f"bytes={chunk.current_pos}-{chunk.end_byte}"
         elif not self.task.supports_range:

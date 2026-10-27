@@ -93,7 +93,8 @@ class ProbeWorker(QThread):
         try:
             headers = {"User-Agent": self.user_agent}
             headers.update(self.custom_headers)
-            with httpx.Client(follow_redirects=True, timeout=12.0) as client:
+            headers.setdefault("Accept-Encoding", "identity")
+            with httpx.Client(follow_redirects=True, timeout=12.0, headers={"Accept-Encoding": "identity"}) as client:
                 resp = client.head(self.url, headers=headers)
                 if resp.status_code >= 400:
                     self.error_signal.emit(f"HTTP {resp.status_code}")
@@ -109,7 +110,7 @@ class ProbeWorker(QThread):
                         return
 
                 total_bytes = -1
-                cl = resp.headers.get("content-length")
+                cl = resp.headers.get("x-identity-content-length") or resp.headers.get("content-length")
                 if cl:
                     try:
                         total_bytes = int(cl)
