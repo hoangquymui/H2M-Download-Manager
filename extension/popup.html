@@ -57,9 +57,12 @@
       <span>Tốc độ:</span>
       <strong id="total-speed">0 KB/s</strong>
     </div>
-    <div class="info-row">
+    <div class="info-row port-row">
       <span>Cổng kết nối:</span>
-      <span class="port-tag">127.0.0.1:9618</span>
+      <div class="port-edit-box">
+        <input type="number" id="input-port" class="port-input" min="1024" max="65535" value="9618" placeholder="9618" />
+        <button id="btn-save-port" class="btn-port-save" title="Lưu số cổng kết nối">Lưu</button>
+      </div>
     </div>
   </div>
 

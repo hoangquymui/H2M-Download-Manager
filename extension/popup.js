@@ -9,6 +9,8 @@ const chkVideoPanel = document.getElementById("chk-video-panel");
 const activeTasksEl = document.getElementById("active-tasks");
 const totalSpeedEl = document.getElementById("total-speed");
 const btnOpenHdm = document.getElementById("btn-open-hdm");
+const inputPort = document.getElementById("input-port");
+const btnSavePort = document.getElementById("btn-save-port");
 
 const mediaCard = document.getElementById("media-card");
 const mediaCountEl = document.getElementById("media-count");
@@ -26,6 +28,7 @@ async function init() {
   const settings = await chrome.storage.local.get({
     autoIntercept: true,
     enableVideoPanel: true,
+    serverPort: 9618,
   });
   chkIntercept.checked = settings.autoIntercept;
   if (chkVideoPanel) {
@@ -38,6 +41,41 @@ async function init() {
   chkIntercept.addEventListener("change", async () => {
     await chrome.storage.local.set({ autoIntercept: chkIntercept.checked });
   });
+
+  if (inputPort) {
+    inputPort.value = settings.serverPort || 9618;
+  }
+
+  async function savePort() {
+    let port = parseInt(inputPort.value, 10);
+    if (isNaN(port) || port < 1024 || port > 65535) {
+      port = 9618;
+      inputPort.value = port;
+    }
+    await chrome.storage.local.set({ serverPort: port });
+    chrome.runtime.sendMessage({ action: "update_port", port: port }, () => {
+      checkStatus();
+    });
+    if (btnSavePort) {
+      btnSavePort.textContent = "✓";
+      btnSavePort.classList.add("saved");
+      setTimeout(() => {
+        btnSavePort.textContent = "Lưu";
+        btnSavePort.classList.remove("saved");
+      }, 1200);
+    }
+  }
+
+  if (btnSavePort) {
+    btnSavePort.addEventListener("click", savePort);
+  }
+  if (inputPort) {
+    inputPort.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        savePort();
+      }
+    });
+  }
 
   btnOpenHdm.addEventListener("click", () => {
     chrome.runtime.sendMessage({ action: "show_hdm" });

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "HDM — H2M Download Manager",
   "short_name": "HDM",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Tiện ích tự động bắt liên kết tải, giám sát luồng phát video (HLS/m3u8, DASH) và nút tải video trực tiếp cho HDM.",
   "permissions": [
     "downloads",

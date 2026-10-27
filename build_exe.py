@@ -46,6 +46,11 @@ def build():
 
     if result.returncode == 0:
         exe_path = os.path.join(dist_dir, "HDM", "HDM.exe")
+        ext_src = os.path.join(root_dir, "extension")
+        ext_dst = os.path.join(dist_dir, "HDM", "extension")
+        if os.path.exists(ext_src):
+            shutil.copytree(ext_src, ext_dst, dirs_exist_ok=True)
+            print(f" Extension copied: {ext_dst}")
         print("\n" + "=" * 60)
         print(" [SUCCESS] HDM has been successfully built!")
         print(f" Output folder: {os.path.join(dist_dir, 'HDM')}")

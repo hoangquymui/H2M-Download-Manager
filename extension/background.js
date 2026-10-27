@@ -4,7 +4,25 @@
  * and communicates with HDM desktop server at 127.0.0.1:9618
  */
 
-const HDM_URLS = ["http://127.0.0.1:9618", "http://localhost:9618"];
+let currentPort = 9618;
+
+// Initialize configured port from storage
+chrome.storage.local.get({ serverPort: 9618 }, (data) => {
+  if (data && data.serverPort) {
+    currentPort = parseInt(data.serverPort, 10) || 9618;
+  }
+});
+
+// React immediately if port is changed in settings/popup
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.serverPort) {
+    currentPort = parseInt(changes.serverPort.newValue, 10) || 9618;
+  }
+});
+
+function getHdmUrls() {
+  return [`http://127.0.0.1:${currentPort}`, `http://localhost:${currentPort}`];
+}
 
 // Cache processed downloads to avoid re-interception loops
 const processedDownloads = new Set();
@@ -16,7 +34,7 @@ const capturedMediaByTab = new Map();
  * Check if HDM desktop app is currently running.
  */
 async function pingHDM() {
-  for (const baseUrl of HDM_URLS) {
+  for (const baseUrl of getHdmUrls()) {
     try {
       const res = await fetch(`${baseUrl}/api/v1/status`, {
         method: "GET",
@@ -35,7 +53,7 @@ async function pingHDM() {
  * Send download request to HDM desktop application.
  */
 async function sendToHDM(data) {
-  for (const baseUrl of HDM_URLS) {
+  for (const baseUrl of getHdmUrls()) {
     try {
       const res = await fetch(`${baseUrl}/api/v1/download`, {
         method: "POST",
@@ -58,7 +76,7 @@ async function sendToHDM(data) {
  * Request HDM to bring its window to the foreground.
  */
 async function showHDMWindow() {
-  for (const baseUrl of HDM_URLS) {
+  for (const baseUrl of getHdmUrls()) {
     try {
       await fetch(`${baseUrl}/api/v1/show`, {
         method: "POST",
@@ -423,6 +441,10 @@ async function handleMediaDownload(data) {
 // Listen to popup and content script messages
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
   if (req.action === "ping") {
+    pingHDM().then(sendResponse);
+    return true;
+  } else if (req.action === "update_port") {
+    currentPort = parseInt(req.port, 10) || 9618;
     pingHDM().then(sendResponse);
     return true;
   } else if (req.action === "show_hdm") {
