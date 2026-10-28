@@ -187,10 +187,16 @@ class DownloadEngine:
         task: DownloadTask,
         on_progress: Optional[Callable[[DownloadTask], None]] = None,
         on_chunk_update: Optional[Callable[[DownloadTask], None]] = None,
+        min_chunk_size: int = MIN_CHUNK_SIZE,
+        min_steal_size: int = MIN_STEAL_SIZE,
+        speed_limit_kbps: int = 0,
     ) -> None:
         self.task = task
         self.on_progress = on_progress
         self.on_chunk_update = on_chunk_update
+        self.min_chunk_size = max(65536, min_chunk_size or MIN_CHUNK_SIZE)
+        self.min_steal_size = max(131072, min_steal_size or MIN_STEAL_SIZE)
+        self.speed_limit_kbps = max(0, speed_limit_kbps or 0)
 
         self._pause_requested = asyncio.Event()
         self._cancel_requested = asyncio.Event()
@@ -500,6 +506,9 @@ class DownloadEngine:
             "nocheckcertificate": True,
             "noplaylist": True,
         }
+        if self.speed_limit_kbps > 0:
+            ydl_opts["ratelimit"] = self.speed_limit_kbps * 1024
+
         if ffmpeg_bin:
             ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_bin)
             if is_audio_only:
@@ -625,7 +634,7 @@ class DownloadEngine:
                     # Initial partition
                     num_workers = min(
                         self.task.num_connections,
-                        max(1, self.task.total_bytes // MIN_CHUNK_SIZE)
+                        max(1, self.task.total_bytes // self.min_chunk_size)
                     )
                     chunk_size = self.task.total_bytes // num_workers
                     self.task.chunks = []
@@ -838,7 +847,7 @@ class DownloadEngine:
         async with self._chunks_lock:
             active_chunks = [
                 c for c in self.task.chunks
-                if c.status == "downloading" and c.remaining_bytes >= MIN_STEAL_SIZE
+                if c.status == "downloading" and c.remaining_bytes >= self.min_steal_size
             ]
             if not active_chunks:
                 return None
@@ -938,6 +947,18 @@ class DownloadEngine:
                         chunk.speed = (chunk.downloaded_bytes - chunk_last_bytes) / elapsed
                         chunk_last_bytes = chunk.downloaded_bytes
                         chunk_last_time = now
+
+                    # Bandwidth throttling when speed_limit_kbps is configured
+                    if self.speed_limit_kbps > 0:
+                        active_cnt = max(
+                            1,
+                            sum(1 for c in self.task.chunks if c.status == "downloading"),
+                        )
+                        per_worker_bps = (self.speed_limit_kbps * 1024.0) / active_cnt
+                        if per_worker_bps > 0 and chunk.speed > per_worker_bps:
+                            sleep_sec = min(0.25, block_len / per_worker_bps)
+                            if sleep_sec > 0.005:
+                                await asyncio.sleep(sleep_sec)
 
                 # Verify completion
                 if chunk.current_pos > chunk.end_byte or (

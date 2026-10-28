@@ -15,7 +15,7 @@ from hdm.core.config import ConfigManager
 from hdm.core.engine import DownloadEngine, is_streaming_url
 from hdm.core.models import DownloadTask, TaskStatus
 from hdm.utils.category import FileCategory, get_category_for_filename, get_category_subfolder
-from hdm.utils.formatters import clean_filename, extract_filename_from_url
+from hdm.utils.formatters import clean_filename, extract_filename_from_url, get_unique_filename
 from hdm.utils.system import get_app_data_folder
 
 logger = logging.getLogger("HDM.Manager")
@@ -78,6 +78,9 @@ class DownloadQueueManager:
             task=task,
             on_progress=self._handle_task_progress,
             on_chunk_update=self._handle_chunk_update,
+            min_chunk_size=getattr(self.config, "min_chunk_size", 1048576),
+            min_steal_size=getattr(self.config, "min_steal_size", 2097152),
+            speed_limit_kbps=getattr(self.config, "speed_limit_kbps", 0),
         )
         self.active_engines[task.id] = engine
 
@@ -146,6 +149,7 @@ class DownloadQueueManager:
                 save_dir = get_category_subfolder(final_category, save_dir)
 
         os.makedirs(save_dir, exist_ok=True)
+        filename = get_unique_filename(save_dir, filename)
 
         if not connections or connections <= 0:
             connections = self.config.default_connections
@@ -221,6 +225,16 @@ class DownloadQueueManager:
         for task in self.tasks.values():
             if task.status == TaskStatus.PAUSED:
                 self.start_task(task.id)
+
+    def clear_completed(self) -> int:
+        """Remove all completed tasks from the list without deleting files on disk."""
+        completed_ids = [
+            tid for tid, t in self.tasks.items()
+            if t.status == TaskStatus.COMPLETED
+        ]
+        for tid in completed_ids:
+            self.delete_task(tid, delete_file=False)
+        return len(completed_ids)
 
     def delete_task(self, task_id: str, delete_file: bool = True) -> bool:
         """Remove task from queue and delete files from disk."""

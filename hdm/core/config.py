@@ -82,8 +82,9 @@ class ConfigManager:
             self.config = config
         set_language(self.config.language)
         try:
-            from hdm.utils.category import set_custom_category_extensions
+            from hdm.utils.category import set_custom_category_extensions, set_custom_category_folders
             set_custom_category_extensions(self.config.category_extensions)
+            set_custom_category_folders(self.config.category_folders)
         except Exception:
             pass
         try:

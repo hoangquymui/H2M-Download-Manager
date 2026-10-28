@@ -33,7 +33,7 @@ from hdm.core.sparse_file import check_free_space
 from hdm.gui.icons import get_icon
 from hdm.gui.style import get_palette
 from hdm.utils.category import FileCategory, get_category_for_filename, get_category_subfolder
-from hdm.utils.formatters import extract_filename_from_url, format_bytes
+from hdm.utils.formatters import extract_filename_from_url, format_bytes, get_unique_filename
 from hdm.utils.i18n import get_category_display, tr
 
 # Keep active probe threads referenced so they are never GC'd while running
@@ -183,8 +183,9 @@ class DownloadConfirmDialog(QDialog):
                 self.cat_combo.setCurrentIndex(idx)
 
         if self.initial_filename:
-            self.filename_input.setText(self.initial_filename)
             self._sync_category_from_filename(self.initial_filename)
+            unique_init = get_unique_filename(self.dir_input.text().strip(), self.initial_filename)
+            self.filename_input.setText(unique_init)
 
         if self.initial_url:
             self.url_input.setText(self.initial_url)
@@ -294,14 +295,14 @@ class DownloadConfirmDialog(QDialog):
 
         opt_grid.addWidget(QLabel(tr("add_quality"), self), 0, 1)
         self.quality_combo = QComboBox(self)
-        self.quality_combo.addItem("Mặc định (Tự động tốt nhất)", "")
-        self.quality_combo.addItem("🎬 MP4 1080p (Full HD / 1K)", "1080")
-        self.quality_combo.addItem("🎬 MP4 720p (HD)", "720")
-        self.quality_combo.addItem("🎬 MP4 480p (Tiêu chuẩn)", "480")
-        self.quality_combo.addItem("🎬 MP4 360p (Tiết kiệm)", "360")
-        self.quality_combo.addItem("🎵 MP3 320 kbps (Cao nhất)", "320")
-        self.quality_combo.addItem("🎵 MP3 192 kbps (Chuẩn)", "192")
-        self.quality_combo.addItem("🎵 MP3 128 kbps (Cơ bản)", "128")
+        self.quality_combo.addItem(tr("quality_auto"), "")
+        self.quality_combo.addItem(tr("quality_1080"), "1080")
+        self.quality_combo.addItem(tr("quality_720"), "720")
+        self.quality_combo.addItem(tr("quality_480"), "480")
+        self.quality_combo.addItem(tr("quality_360"), "360")
+        self.quality_combo.addItem(tr("quality_mp3_320"), "320")
+        self.quality_combo.addItem(tr("quality_mp3_192"), "192")
+        self.quality_combo.addItem(tr("quality_mp3_128"), "128")
         self.quality_combo.currentIndexChanged.connect(self._on_quality_changed)
         opt_grid.addWidget(self.quality_combo, 1, 1)
 
@@ -462,8 +463,9 @@ class DownloadConfirmDialog(QDialog):
             elif quality in ("1080", "720", "480", "360"):
                 name_root, _ = os.path.splitext(filename)
                 filename = f"{name_root}.mp4"
-            self.filename_input.setText(filename)
             self._sync_category_from_filename(filename)
+            unique_fn = get_unique_filename(self.dir_input.text().strip(), filename)
+            self.filename_input.setText(unique_fn)
 
         size_text = format_bytes(total_bytes) if total_bytes > 0 else "Không rõ kích thước"
         range_text = tr("add_range_yes") if supports_range else tr("add_range_no")

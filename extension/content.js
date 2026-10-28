@@ -1,8 +1,9 @@
 /**
  * HDM Browser Extension - Video Download Sniffer
  * Ultra-compact 28px icon button with top-right 'x' dismiss badge,
- * positioned strictly outside the video viewing box, with automatic
- * Network Media Sniffer (HLS/m3u8, DASH/mpd, MP4) integration.
+ * ALWAYS mounted on window.top.document.body and positioned strictly
+ * OUTSIDE the video/stream player box so it never overlaps video controls
+ * and is never clipped by overflow:hidden or iframe boundaries.
  */
 
 (function () {
@@ -10,6 +11,66 @@
 
   if (window.__HDM_CONTENT_SCRIPT_LOADED__) return;
   window.__HDM_CONTENT_SCRIPT_LOADED__ = true;
+
+  const IS_TOP_WINDOW = window === window.top;
+
+  // =========================================================================
+  // 1. Sub-frame (iframe) Handler: Never draw UI inside an iframe!
+  //    Forward video detection to the top-level page so the button is
+  //    placed strictly OUTSIDE the iframe / player container.
+  // =========================================================================
+  if (!IS_TOP_WINDOW) {
+    let notifiedSrc = "";
+
+    function notifyParentOfVideo() {
+      const vid = document.querySelector("video");
+      if (!vid) return;
+      const src = vid.currentSrc || vid.src || "";
+      if (src === notifiedSrc && notifiedSrc !== "") return;
+      notifiedSrc = src || "iframe_video";
+      try {
+        window.parent.postMessage(
+          {
+            type: "HDM_CHILD_VIDEO",
+            src: src && !src.startsWith("blob:") ? src : "",
+            title: document.title || "",
+          },
+          "*"
+        );
+      } catch (e) {}
+    }
+
+    // Forward nested iframe messages up to window.top
+    window.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "HDM_CHILD_VIDEO") {
+        try {
+          window.parent.postMessage(e.data, "*");
+        } catch (err) {}
+      }
+    });
+
+    const subObserver = new MutationObserver(notifyParentOfVideo);
+    subObserver.observe(document.documentElement || document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["src"],
+    });
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", notifyParentOfVideo);
+    } else {
+      notifyParentOfVideo();
+    }
+    setTimeout(notifyParentOfVideo, 1000);
+    setTimeout(notifyParentOfVideo, 3000);
+    return;
+  }
+
+  // =========================================================================
+  // 2. Top-Level Window Handler: Render Button & Menu on document.body
+  //    strictly OUTSIDE any video / stream player box.
+  // =========================================================================
 
   const SVG_DOWNLOAD_ICON = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
@@ -31,7 +92,30 @@
     </svg>
   `;
 
+  const PLAYER_BOX_SELECTORS = [
+    "#halim-player-wrapper",
+    "#ajax-player-hh3d",
+    ".playerjs-mount-slot",
+    ".halim-player-aspect",
+    ".halim-playerjs-host",
+    "#movie_player",
+    ".html5-video-player",
+    "#player-container-outer",
+    "ytd-player",
+    "#player",
+    ".watch-player",
+    ".film-player",
+    "#video-player",
+    ".video-player",
+    ".artplayer-app",
+    ".dplayer",
+    ".jwplayer",
+    ".video-js",
+    ".plyr",
+  ];
+
   let lastSniffedMedia = null;
+  const activeButtons = []; // Array of { targetEl, wrap, qualityMenu, updatePos, mediaOverride }
 
   function isYouTube() {
     return (
@@ -64,27 +148,30 @@
     return document.title.trim() || "Video";
   }
 
-  function findAnchorContainer(video) {
+  /**
+   * Given a <video>, <iframe>, or inner player element, resolve the clean
+   * outer video/stream player box whose bounding rect represents the player frame.
+   */
+  function resolvePlayerBox(el) {
+    if (!el || el === document.body || el === document.documentElement) return null;
+
     if (isYouTube()) {
-      const ytPlayer =
-        document.querySelector("#player") ||
-        document.querySelector("ytd-watch-flexy #player") ||
-        document.querySelector(".ytd-watch-flexy #player");
-      if (ytPlayer) return ytPlayer;
+      const ytBox =
+        el.closest("#movie_player, #player-container-outer, ytd-player, #player") ||
+        document.querySelector("#movie_player") ||
+        document.querySelector("#player");
+      if (ytBox && ytBox.offsetWidth >= 160 && ytBox.offsetHeight >= 100) {
+        return ytBox;
+      }
     }
 
-    // Check if video is inside a known movie/video player wrapper
-    const known = video.closest(
-      "#halim-player-wrapper, #ajax-player-hh3d, .playerjs-mount-slot, .halim-player-aspect, .halim-playerjs-host, #player, .player, .artplayer-app, .dplayer, .jwplayer, .video-js, .watch-player, .film-player"
-    );
-    if (known) return known;
-
-    let container = video.parentElement;
-    if (container && container !== document.body) {
-      return container;
+    const outerSelector = PLAYER_BOX_SELECTORS.join(", ");
+    const matchedWrapper = el.closest(outerSelector);
+    if (matchedWrapper && matchedWrapper.offsetWidth >= 160 && matchedWrapper.offsetHeight >= 100) {
+      return matchedWrapper;
     }
 
-    return video.parentElement || video;
+    return el;
   }
 
   function showToast(msg, isError) {
@@ -101,30 +188,40 @@
     }, 4000);
   }
 
-  function getVideoSource(video) {
+  function getVideoSource(videoOrBox) {
     if (isYouTube()) {
       return window.location.href;
     }
-    // High priority: Network sniffed stream URL (m3u8, mpd, mp4)
     if (lastSniffedMedia && lastSniffedMedia.url) {
       return lastSniffedMedia.url;
     }
-    if (video) {
-      const rawSrc = video.currentSrc || video.src;
-      if (rawSrc && !rawSrc.startsWith("blob:")) {
-        return rawSrc;
-      }
-      const sources = video.querySelectorAll("source");
-      for (const s of sources) {
-        if (s.src && !s.src.startsWith("blob:")) {
-          return s.src;
+    if (videoOrBox) {
+      const vid =
+        videoOrBox.tagName === "VIDEO"
+          ? videoOrBox
+          : videoOrBox.querySelector
+          ? videoOrBox.querySelector("video")
+          : null;
+      if (vid) {
+        const rawSrc = vid.currentSrc || vid.src;
+        if (rawSrc && !rawSrc.startsWith("blob:")) {
+          return rawSrc;
         }
+        const sources = vid.querySelectorAll("source");
+        for (const s of sources) {
+          if (s.src && !s.src.startsWith("blob:")) {
+            return s.src;
+          }
+        }
+      }
+      if (videoOrBox.__hdm_iframe_src__) {
+        return videoOrBox.__hdm_iframe_src__;
       }
     }
     return window.location.href;
   }
 
-  function triggerDownload(formatType, qualityType, sourceBtn, video, mediaOverride) {
+  function triggerDownload(formatType, qualityType, sourceBtn, targetEl, mediaOverride) {
     const originalHtml = sourceBtn ? sourceBtn.innerHTML : "";
     if (sourceBtn) {
       sourceBtn.classList.add("loading");
@@ -135,7 +232,7 @@
     const targetUrl =
       (mediaOverride && mediaOverride.url) ||
       (lastSniffedMedia && lastSniffedMedia.url) ||
-      getVideoSource(video);
+      getVideoSource(targetEl);
 
     const title =
       (mediaOverride && mediaOverride.title) ||
@@ -191,35 +288,62 @@
     );
   }
 
-  function createOutsideButton(video, container, mediaOverride) {
-    if (container.__hdm_dismissed__ || container.querySelector(".hdm-btn-wrap")) return;
-
-    // Ensure container has relative/absolute positioning
-    const compStyle = window.getComputedStyle(container);
-    if (compStyle.position === "static") {
-      container.style.position = "relative";
+  function isAlreadyTracked(candidateEl) {
+    for (let i = activeButtons.length - 1; i >= 0; i--) {
+      const entry = activeButtons[i];
+      if (!entry.targetEl || !entry.targetEl.isConnected) {
+        entry.wrap.remove();
+        entry.qualityMenu.remove();
+        activeButtons.splice(i, 1);
+        continue;
+      }
+      if (
+        entry.targetEl === candidateEl ||
+        entry.targetEl.contains(candidateEl) ||
+        candidateEl.contains(entry.targetEl)
+      ) {
+        return entry;
+      }
+      const r1 = entry.targetEl.getBoundingClientRect();
+      const r2 = candidateEl.getBoundingClientRect();
+      if (
+        r1.width > 0 &&
+        r2.width > 0 &&
+        Math.abs(r1.top - r2.top) < 40 &&
+        Math.abs(r1.left - r2.left) < 40
+      ) {
+        return entry;
+      }
     }
+    return null;
+  }
 
-    // Outer wrapper
-    const wrap = document.createElement("div");
-    wrap.className = "hdm-btn-wrap hdm-pos-top";
+  /**
+   * Check if a viewport coordinate (x, y) is covered by a fixed/sticky top header
+   * (such as YouTube's masthead bar).
+   */
+  function isCoveredByFixedHeader(x, y, playerEl) {
+    if (y < 4) return true;
+    try {
+      const elAtPoint = document.elementFromPoint(x, y);
+      if (!elAtPoint || playerEl.contains(elAtPoint)) return false;
+      let cur = elAtPoint;
+      while (cur && cur !== document.body && cur !== document.documentElement) {
+        if (cur.classList && (cur.classList.contains("hdm-btn-wrap") || cur.classList.contains("hdm-quality-menu"))) {
+          return false;
+        }
+        const style = window.getComputedStyle(cur);
+        if ((style.position === "fixed" || style.position === "sticky") && cur.getBoundingClientRect().bottom >= y) {
+          return true;
+        }
+        cur = cur.parentElement;
+      }
+    } catch (e) {}
+    return false;
+  }
 
-    // Main 28px circular button
-    const btn = document.createElement("div");
-    btn.className = "hdm-outside-btn";
-    btn.setAttribute("title", "Tải video với HDM (Bấm để chọn định dạng & chất lượng)");
-    btn.innerHTML = SVG_DOWNLOAD_ICON;
-
-    // Mini 'x' dismiss badge at top-right
-    const closeBtn = document.createElement("div");
-    closeBtn.className = "hdm-close-x";
-    closeBtn.setAttribute("title", "Ẩn nút tải này");
-    closeBtn.innerHTML = "&times;";
-
-    // Dynamic quality & format selection dropdown menu
-    const qualityMenu = document.createElement("div");
-    qualityMenu.className = "hdm-quality-menu";
-    qualityMenu.innerHTML = `
+  function buildQualityMenuHtml() {
+    return `
       <div class="hdm-menu-sec">🎬 Tải Video (MP4)</div>
       <div class="hdm-menu-item" data-format="mp4" data-quality="1080">
         <div class="hdm-menu-item-left">
@@ -282,36 +406,116 @@
         <span class="hdm-badge-q audio">128k</span>
       </div>
     `;
-    document.body.appendChild(qualityMenu);
+  }
 
-    closeBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      container.__hdm_dismissed__ = true;
-      qualityMenu.remove();
-      wrap.style.opacity = "0";
-      wrap.style.transform = "scale(0.8)";
-      setTimeout(() => wrap.remove(), 200);
-    });
+  /**
+   * Mount the download button on document.body and dock it strictly OUTSIDE playerBox.
+   */
+  function createOutsideButton(playerBox, mediaOverride) {
+    const targetEl = resolvePlayerBox(playerBox);
+    if (!targetEl || targetEl.__hdm_dismissed__) return;
+
+    // Remove fallback fixed button if a real player box is now available
+    const fixedBtn = document.querySelector(".hdm-btn-wrap.hdm-pos-fixed");
+    if (fixedBtn) fixedBtn.remove();
+
+    const existing = isAlreadyTracked(targetEl);
+    if (existing) {
+      if (mediaOverride) existing.mediaOverride = mediaOverride;
+      existing.updatePos();
+      return;
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "hdm-btn-wrap";
+
+    const btn = document.createElement("div");
+    btn.className = "hdm-outside-btn";
+    btn.setAttribute("title", "Tải video với HDM (Bấm để chọn định dạng & chất lượng)");
+    btn.innerHTML = SVG_DOWNLOAD_ICON;
+
+    const closeBtn = document.createElement("div");
+    closeBtn.className = "hdm-close-x";
+    closeBtn.setAttribute("title", "Ẩn nút tải này");
+    closeBtn.innerHTML = "&times;";
+
+    const qualityMenu = document.createElement("div");
+    qualityMenu.className = "hdm-quality-menu";
+    qualityMenu.innerHTML = buildQualityMenuHtml();
+
+    document.body.appendChild(wrap);
+    document.body.appendChild(qualityMenu);
 
     wrap.appendChild(btn);
     wrap.appendChild(closeBtn);
 
-    // Dynamic placement check (above vs below depending on available space)
+    const entry = {
+      targetEl: targetEl,
+      wrap: wrap,
+      qualityMenu: qualityMenu,
+      mediaOverride: mediaOverride || null,
+      updatePos: updatePlacement,
+    };
+    activeButtons.push(entry);
+
     function updatePlacement() {
-      const rect = container.getBoundingClientRect();
-      if (rect.top < 40) {
-        wrap.classList.remove("hdm-pos-top");
-        wrap.classList.add("hdm-pos-bottom");
-      } else {
-        wrap.classList.remove("hdm-pos-bottom");
-        wrap.classList.add("hdm-pos-top");
+      if (!targetEl.isConnected) {
+        wrap.style.setProperty("display", "none", "important");
+        qualityMenu.classList.remove("show");
+        return;
       }
+      if (document.fullscreenElement) {
+        wrap.style.setProperty("display", "none", "important");
+        qualityMenu.classList.remove("show");
+        return;
+      }
+
+      const rect = targetEl.getBoundingClientRect();
+      if (rect.width < 120 || rect.height < 80) {
+        wrap.style.setProperty("display", "none", "important");
+        return;
+      }
+
+      wrap.style.setProperty("display", "inline-flex", "important");
+
+      const leftPage = Math.round(window.scrollX + Math.max(6, rect.left + 4));
+      const candidateTopViewportY = rect.top - 20;
+
+      // Place strictly ABOVE the top-left of the video box if space above is clear;
+      // otherwise place strictly BELOW the bottom-left of the video box.
+      let topPage;
+      if (rect.top >= 38 && !isCoveredByFixedHeader(rect.left + 18, candidateTopViewportY, targetEl)) {
+        topPage = Math.round(window.scrollY + rect.top - 34);
+      } else {
+        topPage = Math.round(window.scrollY + rect.bottom + 6);
+      }
+
+      wrap.style.setProperty("top", `${topPage}px`, "important");
+      wrap.style.setProperty("left", `${leftPage}px`, "important");
     }
 
     updatePlacement();
-    window.addEventListener("scroll", updatePlacement, { passive: true });
-    window.addEventListener("resize", updatePlacement, { passive: true });
+
+    let resizeObs = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObs = new ResizeObserver(updatePlacement);
+      resizeObs.observe(targetEl);
+    }
+
+    closeBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      targetEl.__hdm_dismissed__ = true;
+      if (resizeObs) resizeObs.disconnect();
+      qualityMenu.remove();
+      wrap.style.opacity = "0";
+      wrap.style.transform = "scale(0.8)";
+      setTimeout(() => {
+        wrap.remove();
+        const idx = activeButtons.indexOf(entry);
+        if (idx !== -1) activeButtons.splice(idx, 1);
+      }, 200);
+    });
 
     function toggleMenu(e) {
       if (e) {
@@ -323,7 +527,6 @@
         return;
       }
 
-      // Close any other open menus
       document.querySelectorAll(".hdm-quality-menu.show").forEach((m) => {
         if (m !== qualityMenu) m.classList.remove("show");
       });
@@ -342,7 +545,6 @@
       qualityMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - 270, rect.left))}px`;
     }
 
-    // Left click and right click open the format/quality selector
     btn.addEventListener("click", toggleMenu);
     btn.addEventListener("contextmenu", toggleMenu);
 
@@ -360,7 +562,7 @@
         const fmt = item.getAttribute("data-format");
         const q = item.getAttribute("data-quality") || "";
         qualityMenu.classList.remove("show");
-        triggerDownload(fmt, q, btn, video, mediaOverride);
+        triggerDownload(fmt, q, btn, targetEl, entry.mediaOverride);
       }
     });
 
@@ -369,55 +571,57 @@
         qualityMenu.classList.remove("show");
       }
     });
-
-    window.addEventListener(
-      "scroll",
-      () => {
-        if (qualityMenu.classList.contains("show")) {
-          qualityMenu.classList.remove("show");
-        }
-      },
-      { passive: true }
-    );
-
-    container.appendChild(wrap);
   }
 
-  function createFixedScreenButton(mediaOverride) {
-    if (document.body.__hdm_dismissed__ || document.querySelector(".hdm-btn-wrap.hdm-pos-fixed")) {
-      return;
+  function updateAllPlacements() {
+    for (const entry of activeButtons) {
+      entry.updatePos();
+      if (entry.qualityMenu.classList.contains("show")) {
+        entry.qualityMenu.classList.remove("show");
+      }
     }
+  }
 
-    const wrap = document.createElement("div");
-    wrap.className = "hdm-btn-wrap hdm-pos-fixed";
-    wrap.style.cssText = "position: fixed !important; top: 20px !important; left: 20px !important; z-index: 2147483647 !important;";
+  window.addEventListener("scroll", updateAllPlacements, { passive: true });
+  window.addEventListener("resize", updateAllPlacements, { passive: true });
+  document.addEventListener("fullscreenchange", updateAllPlacements);
 
-    const btn = document.createElement("div");
-    btn.className = "hdm-outside-btn";
-    btn.setAttribute("title", `Tải video phát hiện bởi HDM: ${mediaOverride.title || 'Video'}`);
-    btn.innerHTML = SVG_DOWNLOAD_ICON;
+  /**
+   * Scan the page for any video element, known player wrapper, or video iframe.
+   */
+  function scanVideos() {
+    chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
+      if (!settings.enableVideoPanel) return;
 
-    const closeBtn = document.createElement("div");
-    closeBtn.className = "hdm-close-x";
-    closeBtn.setAttribute("title", "Ẩn nút tải này");
-    closeBtn.innerHTML = "&times;";
+      // 1. Direct <video> elements
+      const videos = document.querySelectorAll("video");
+      videos.forEach((vid) => {
+        if (vid.offsetWidth < 120 && vid.offsetHeight < 80 && !isYouTube()) return;
+        createOutsideButton(vid);
+      });
 
-    closeBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      document.body.__hdm_dismissed__ = true;
-      wrap.remove();
+      // 2. Known video/stream player containers (Halim, Playerjs, ArtPlayer, JWPlayer, etc.)
+      for (const sel of PLAYER_BOX_SELECTORS) {
+        const boxes = document.querySelectorAll(sel);
+        boxes.forEach((box) => {
+          if (box.offsetWidth >= 160 && box.offsetHeight >= 100) {
+            createOutsideButton(box);
+          }
+        });
+      }
+
+      // 3. Embedded video/stream iframes
+      const iframes = document.querySelectorAll(
+        "iframe[src*='player'], iframe[src*='embed'], iframe[src*='video'], iframe[src*='stream'], iframe[src*='hls'], iframe[src*='m3u8'], iframe[allowfullscreen]"
+      );
+      iframes.forEach((ifr) => {
+        if (ifr.offsetWidth >= 220 && ifr.offsetHeight >= 130) {
+          createOutsideButton(ifr);
+        }
+      });
+
+      updateAllPlacements();
     });
-
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      triggerDownload("mp4", "", btn, null, mediaOverride);
-    });
-
-    wrap.appendChild(btn);
-    wrap.appendChild(closeBtn);
-    document.body.appendChild(wrap);
   }
 
   function attachSniffedMediaButton(media) {
@@ -426,74 +630,50 @@
 
       lastSniffedMedia = media;
 
-      if (document.querySelector(".hdm-btn-wrap")) {
+      // Update any existing tracked button with the sniffed stream metadata
+      if (activeButtons.length > 0) {
+        activeButtons.forEach((entry) => {
+          entry.mediaOverride = media;
+          entry.updatePos();
+        });
         return;
       }
 
-      // 1. Try to find player container or iframe
-      let container = null;
-      const playerSelectors = [
-        "#halim-player-wrapper",
-        "#ajax-player-hh3d",
-        ".playerjs-mount-slot",
-        ".halim-player-aspect",
-        ".halim-playerjs-host",
-        "#player",
-        ".player",
-        ".watch-player",
-        ".film-player",
-        "#video-player",
-        ".video-player",
-        ".artplayer-app",
-        ".dplayer",
-        ".jwplayer",
-        ".video-js",
-        "video",
-        "iframe[src*='player']",
-        "iframe[src*='embed']",
-        "iframe[src*='video']",
-      ];
-      for (const sel of playerSelectors) {
+      // Look for any player container or large iframe on the page
+      for (const sel of [...PLAYER_BOX_SELECTORS, "video"]) {
         const el = document.querySelector(sel);
-        if (el) {
-          container = el;
+        if (el && el.offsetWidth >= 140 && el.offsetHeight >= 90) {
+          createOutsideButton(el, media);
+          return;
+        }
+      }
+
+      const iframes = document.querySelectorAll("iframe");
+      for (const ifr of iframes) {
+        if (ifr.offsetWidth >= 180 && ifr.offsetHeight >= 110) {
+          createOutsideButton(ifr, media);
+          return;
+        }
+      }
+    });
+  }
+
+  // Listen for child iframe video detection via postMessage
+  window.addEventListener("message", (e) => {
+    if (!e.data || e.data.type !== "HDM_CHILD_VIDEO") return;
+    const iframes = document.querySelectorAll("iframe");
+    for (const ifr of iframes) {
+      try {
+        if (ifr.contentWindow === e.source) {
+          if (e.data.src) {
+            ifr.__hdm_iframe_src__ = e.data.src;
+          }
+          createOutsideButton(ifr);
           break;
         }
-      }
-
-      if (!container) {
-        // Fallback: look for any visible large iframe
-        const iframes = document.querySelectorAll("iframe");
-        for (const ifr of iframes) {
-          if (ifr.offsetWidth > 160 && ifr.offsetHeight > 100) {
-            container = ifr.parentElement && ifr.parentElement !== document.body ? ifr.parentElement : ifr;
-            break;
-          }
-        }
-      }
-
-      if (container && !container.__hdm_dismissed__) {
-        createOutsideButton(null, container, media);
-      } else if (!document.body.__hdm_dismissed__) {
-        createFixedScreenButton(media);
-      }
-    });
-  }
-
-  function scanVideos() {
-    chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
-      if (!settings.enableVideoPanel) return;
-
-      const videos = document.querySelectorAll("video");
-      videos.forEach((vid) => {
-        if (vid.offsetWidth < 80 && vid.offsetHeight < 50 && !isYouTube()) return;
-        const container = findAnchorContainer(vid);
-        if (container && !container.__hdm_dismissed__) {
-          createOutsideButton(vid, container);
-        }
-      });
-    });
-  }
+      } catch (err) {}
+    }
+  });
 
   // Listen for sniffed media messages from background service worker
   chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
@@ -525,4 +705,7 @@
   } else {
     scanVideos();
   }
+
+  // Periodic layout sync for dynamic AJAX players
+  setInterval(updateAllPlacements, 1200);
 })();

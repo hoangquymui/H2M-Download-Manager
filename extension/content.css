@@ -1,39 +1,24 @@
 /**
  * HDM Browser Extension - Video Download Sniffer Stylesheet
  * Ultra-compact 28px icon button with top-right 'x' dismiss badge,
- * positioned strictly outside the video viewing box.
+ * positioned strictly outside the video viewing box on document.body.
  */
 
-/* 1. Wrapper Container for Floating Button & Close Badge */
+/* 1. Wrapper Container for Floating Button & Close Badge (mounted on document.body) */
 .hdm-btn-wrap {
   position: absolute !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
   z-index: 2147483647 !important;
-  transition: opacity 0.2s ease, transform 0.2s ease !important;
+  pointer-events: auto !important;
+  transition: opacity 0.18s ease, transform 0.18s ease !important;
 }
 
-/* Positioned inside the player at top-left corner */
-.hdm-btn-wrap.hdm-pos-top {
-  top: 12px !important;
-  left: 12px !important;
-  right: auto !important;
-  bottom: auto !important;
-}
-
-/* Positioned cleanly near bottom-left when top is occupied */
-.hdm-btn-wrap.hdm-pos-bottom {
-  bottom: 40px !important;
-  left: 12px !important;
-  right: auto !important;
-  top: auto !important;
-}
-
-/* Positioned fixed on top-left of the screen when video is in an inaccessible cross-origin iframe */
+/* Fallback fixed position when no player box is found on screen */
 .hdm-btn-wrap.hdm-pos-fixed {
   position: fixed !important;
-  top: 18px !important;
+  top: 72px !important;
   left: 18px !important;
   right: auto !important;
   bottom: auto !important;
@@ -250,7 +235,7 @@
   border-color: rgba(168, 85, 247, 0.3) !important;
 }
 
-/* 5. Toast Notification for Direct On-Screen Feedback */
+/* 5. Toast Notification for Error Feedback */
 .hdm-toast {
   display: none;
   position: fixed !important;
@@ -284,11 +269,3 @@
   border: 1px solid #ef4444 !important;
   color: #fecaca !important;
 }
-
-.hdm-toast.success {
-  background: rgba(6, 78, 59, 0.95) !important;
-  border: 1px solid #10b981 !important;
-  color: #a7f3d0 !important;
-}
-
-

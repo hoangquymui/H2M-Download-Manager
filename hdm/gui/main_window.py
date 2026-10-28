@@ -61,11 +61,11 @@ STATUS_FILTER_SPECS = [
 ]
 
 CATEGORY_FILTER_SPECS = [
-    ("cat_compressed", "📦"),
-    ("cat_programs", "💻"),
     ("cat_video", "🎬"),
     ("cat_audio", "🎵"),
+    ("cat_compressed", "📦"),
     ("cat_docs", "📄"),
+    ("cat_programs", "💻"),
     ("cat_images", "🖼"),
     ("cat_others", "📂"),
 ]
@@ -76,11 +76,11 @@ FILTER_KEY_MAP = {
     "status_completed": "sidebar_status_completed",
     "status_paused": "sidebar_status_paused",
     "status_error": "sidebar_status_error",
-    "cat_compressed": "cat_compressed",
-    "cat_programs": "cat_programs",
     "cat_video": "cat_video",
     "cat_audio": "cat_audio",
+    "cat_compressed": "cat_compressed",
     "cat_docs": "cat_docs",
+    "cat_programs": "cat_programs",
     "cat_images": "cat_images",
     "cat_others": "cat_others",
 }
@@ -506,13 +506,22 @@ class MainWindow(QMainWindow):
         self.act_pause_all.triggered.connect(self.manager.pause_all)
         self.menu_tasks.addAction(self.act_pause_all)
 
+        self.menu_tasks.addSeparator()
+        self.act_clear_completed = QAction(tr("menu_clear_completed"), self)
+        self.act_clear_completed.triggered.connect(self._on_clear_completed)
+        self.menu_tasks.addAction(self.act_clear_completed)
+
         # Tools Menu
         self.menu_tools = menubar.addMenu(tr("menu_tools"))
         self.act_settings = QAction(tr("menu_settings"), self)
         self.act_settings.triggered.connect(self.show_settings_dialog)
         self.menu_tools.addAction(self.act_settings)
 
-        self.act_toggle_theme = QAction("Chuyển Giao diện Sáng / Tối", self)
+        self.act_open_downloads = QAction(tr("menu_open_downloads"), self)
+        self.act_open_downloads.triggered.connect(self._on_action_open_folder)
+        self.menu_tools.addAction(self.act_open_downloads)
+
+        self.act_toggle_theme = QAction(tr("menu_toggle_theme"), self)
         self.act_toggle_theme.setShortcut(QKeySequence("Ctrl+T"))
         self.act_toggle_theme.setCheckable(False)
         self.act_toggle_theme.triggered.connect(self.toggle_theme)
@@ -854,9 +863,15 @@ class MainWindow(QMainWindow):
             self.menu_tasks.setTitle(tr("menu_tasks"))
             self.act_resume_all.setText(tr("menu_resume_all"))
             self.act_pause_all.setText(tr("menu_pause_all"))
+            if hasattr(self, "act_clear_completed"):
+                self.act_clear_completed.setText(tr("menu_clear_completed"))
         if hasattr(self, "menu_tools"):
             self.menu_tools.setTitle(tr("menu_tools"))
             self.act_settings.setText(tr("menu_settings"))
+            if hasattr(self, "act_open_downloads"):
+                self.act_open_downloads.setText(tr("menu_open_downloads"))
+            if hasattr(self, "act_toggle_theme"):
+                self.act_toggle_theme.setText(tr("menu_toggle_theme"))
             self.act_ext.setText(tr("menu_install_extension"))
         if hasattr(self, "menu_help"):
             self.menu_help.setTitle(tr("menu_help"))
@@ -1063,7 +1078,7 @@ class MainWindow(QMainWindow):
                     item_speed.setForeground(QColor(colors["cyan"]))
                     item_speed.setFont(bold_font)
                 elif task.status == TaskStatus.PROCESSING:
-                    item_speed = QTableWidgetItem("Xử lý...")
+                    item_speed = QTableWidgetItem(tr("status_processing_short"))
                     item_speed.setForeground(QColor(colors["warning"]))
                     item_speed.setFont(bold_font)
                 else:
@@ -1076,7 +1091,7 @@ class MainWindow(QMainWindow):
                 if task.status == TaskStatus.DOWNLOADING:
                     eta_str = format_eta(task.eta)
                 elif task.status == TaskStatus.PROCESSING:
-                    eta_str = "Chờ hoàn tất"
+                    eta_str = tr("eta_waiting_finish")
                 else:
                     eta_str = "--"
                 item_eta = QTableWidgetItem(eta_str)
@@ -1142,7 +1157,7 @@ class MainWindow(QMainWindow):
                     item_speed.setForeground(QColor(colors["cyan"]))
                     item_speed.setFont(bold_font)
                 elif task.status == TaskStatus.PROCESSING:
-                    item_speed.setText("Xử lý...")
+                    item_speed.setText(tr("status_processing_short"))
                     item_speed.setForeground(QColor(colors["warning"]))
                     item_speed.setFont(bold_font)
                 else:
@@ -1155,7 +1170,7 @@ class MainWindow(QMainWindow):
                 if task.status == TaskStatus.DOWNLOADING:
                     eta_str = format_eta(task.eta)
                 elif task.status == TaskStatus.PROCESSING:
-                    eta_str = "Chờ hoàn tất"
+                    eta_str = tr("eta_waiting_finish")
                 else:
                     eta_str = "--"
                 item_eta.setText(eta_str)
@@ -1257,12 +1272,23 @@ class MainWindow(QMainWindow):
         menu.exec(QCursor.pos())
 
     def _confirm_delete(self, task: DownloadTask, delete_file: bool = True) -> None:
-        msg = tr("confirm_delete_msg", filename=task.filename)
-        title = tr("confirm_delete_title")
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle(tr("confirm_delete_title"))
+        box.setText(tr("confirm_delete_msg", filename=task.filename))
+        chk_del = QCheckBox(tr("batch_delete_files_chk"), box)
+        chk_del.setChecked(delete_file)
+        box.setCheckBox(chk_del)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.Yes)
 
-        res = QMessageBox.question(self, title, msg, QMessageBox.Yes | QMessageBox.No)
-        if res == QMessageBox.Yes:
-            self.manager.delete_task(task.id, delete_file=delete_file)
+        if box.exec() == QMessageBox.Yes:
+            self.manager.delete_task(task.id, delete_file=chk_del.isChecked())
+            self._reload_table_full()
+
+    def _on_clear_completed(self) -> None:
+        cleared = self.manager.clear_completed()
+        if cleared > 0:
             self._reload_table_full()
 
     def _on_action_resume(self) -> None:

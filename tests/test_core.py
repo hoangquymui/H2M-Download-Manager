@@ -21,7 +21,13 @@ from hdm.utils.category import (
     set_custom_category_extensions,
     set_custom_category_folders,
 )
-from hdm.utils.formatters import clean_filename, extract_filename_from_url, format_bytes, format_speed
+from hdm.utils.formatters import (
+    clean_filename,
+    extract_filename_from_url,
+    format_bytes,
+    format_speed,
+    get_unique_filename,
+)
 
 
 def test_formatters():
@@ -35,6 +41,21 @@ def test_formatters():
 
     assert clean_filename('test:file*name?.zip') == 'test_file_name_.zip'
     assert extract_filename_from_url('https://example.com/archive.tar.gz?v=1') == 'archive.tar.gz'
+
+    with tempfile.TemporaryDirectory() as td:
+        f1 = os.path.join(td, "myfile.mp4")
+        with open(f1, "w") as f:
+            f.write("test")
+        # Since myfile.mp4 exists, next candidate should be myfile (1).mp4
+        assert get_unique_filename(td, "myfile.mp4") == "myfile (1).mp4"
+        # If both exist, next candidate should be myfile (2).mp4
+        f2 = os.path.join(td, "myfile (1).mp4")
+        with open(f2, "w") as f:
+            f.write("test")
+        assert get_unique_filename(td, "myfile.mp4") == "myfile (2).mp4"
+        # Non-existing file keeps name
+        assert get_unique_filename(td, "other.mp4") == "other.mp4"
+
     print("✅ test_formatters passed!")
 
 

@@ -29,9 +29,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hdm.core.config import Config, ConfigManager
+from hdm.core.config import ConfigManager
 from hdm.gui.style import apply_theme, normalize_theme
-from hdm.utils.category import CATEGORY_CONFIG_SPECS, DEFAULT_CATEGORY_EXTENSIONS
+from hdm.utils.category import CATEGORY_CONFIG_SPECS
 from hdm.utils.i18n import normalize_language, set_language, tr
 
 
@@ -160,17 +160,26 @@ class SettingsDialog(QDialog):
         self.max_tasks_spin.setValue(self.config.max_concurrent_tasks)
         grid_storage.addWidget(self.max_tasks_spin, 1, 3)
 
+        grid_storage.addWidget(QLabel(tr("settings_speed_limit")), 2, 0, 1, 2)
+        self.speed_spin = QSpinBox(grp_storage)
+        self.speed_spin.setRange(0, 1000000)
+        self.speed_spin.setSingleStep(256)
+        self.speed_spin.setSuffix(" KB/s")
+        self.speed_spin.setSpecialValueText(tr("settings_speed_unlimited"))
+        self.speed_spin.setValue(getattr(self.config, "speed_limit_kbps", 0))
+        grid_storage.addWidget(self.speed_spin, 2, 2, 1, 2)
+
         self.chk_categorize = QCheckBox(tr("settings_chk_categorize"), grp_storage)
         self.chk_categorize.setChecked(self.config.auto_categorize)
-        grid_storage.addWidget(self.chk_categorize, 2, 0, 1, 4)
+        grid_storage.addWidget(self.chk_categorize, 3, 0, 1, 4)
 
         self.chk_autostart = QCheckBox(tr("settings_chk_autostart"), grp_storage)
         self.chk_autostart.setChecked(self.config.auto_start)
-        grid_storage.addWidget(self.chk_autostart, 3, 0, 1, 4)
+        grid_storage.addWidget(self.chk_autostart, 4, 0, 1, 4)
 
         self.chk_start_with_windows = QCheckBox(tr("settings_chk_start_with_windows"), grp_storage)
         self.chk_start_with_windows.setChecked(self.config.start_with_windows)
-        grid_storage.addWidget(self.chk_start_with_windows, 4, 0, 1, 4)
+        grid_storage.addWidget(self.chk_start_with_windows, 5, 0, 1, 4)
 
         page_layout.addWidget(grp_storage)
 
@@ -302,12 +311,10 @@ class SettingsDialog(QDialog):
         info_box.setObjectName("browser_info_box")
         info_layout = QVBoxLayout(info_box)
         info_layout.setContentsMargins(12, 10, 12, 10)
-        info_title = QLabel("💡 Hướng dẫn tích hợp tiện ích trình duyệt:", info_box)
+        info_title = QLabel(tr("settings_browser_guide_title"), info_box)
         info_title.setStyleSheet("font-weight: 700;")
         info_desc = QLabel(
-            "Tiện ích mở rộng trên Chrome, Edge, Cốc Cốc, Brave sẽ tự động gửi liên kết tải về qua cổng nội bộ "
-            f"HTTP (mặc định: {self.config.server_port}). Nếu đổi cổng, vui lòng mở tiện ích trên trình duyệt "
-            "để cập nhật lại cổng kết nối tương ứng.",
+            tr("settings_browser_guide_desc", port=self.config.server_port),
             info_box,
         )
         info_desc.setWordWrap(True)
@@ -386,6 +393,7 @@ class SettingsDialog(QDialog):
         self.config.default_save_dir = self.dir_input.text().strip()
         self.config.default_connections = self.conn_spin.value()
         self.config.max_concurrent_tasks = self.max_tasks_spin.value()
+        self.config.speed_limit_kbps = self.speed_spin.value()
         self.config.server_port = self.port_spin.value()
         self.config.auto_categorize = self.chk_categorize.isChecked()
         self.config.server_enabled = self.chk_server.isChecked()

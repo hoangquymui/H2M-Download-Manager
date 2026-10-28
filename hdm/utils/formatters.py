@@ -91,6 +91,30 @@ def clean_filename(filename: str) -> str:
     return cleaned if cleaned else "download"
 
 
+def get_unique_filename(save_dir: str, filename: str) -> str:
+    """Return a non-conflicting filename in save_dir by appending ' (1)', ' (2)', etc. if needed."""
+    cleaned = clean_filename(filename)
+    if not save_dir or not os.path.isdir(save_dir):
+        return cleaned
+
+    full_path = os.path.join(save_dir, cleaned)
+    part_path = f"{full_path}.hdm_part"
+    if not os.path.exists(full_path) and not os.path.exists(part_path):
+        return cleaned
+
+    stem, ext = os.path.splitext(cleaned)
+    # Strip trailing ' (N)' if already numbered so we increment cleanly
+    stem = re.sub(r"\s*\(\d+\)$", "", stem)
+    counter = 1
+    while True:
+        candidate = f"{stem} ({counter}){ext}"
+        cand_full = os.path.join(save_dir, candidate)
+        cand_part = f"{cand_full}.hdm_part"
+        if not os.path.exists(cand_full) and not os.path.exists(cand_part):
+            return candidate
+        counter += 1
+
+
 def extract_filename_from_url(url: str, content_disposition: Optional[str] = None) -> str:
     """Extract and decode appropriate filename from Content-Disposition header or URL."""
     # 1. Try parsing Content-Disposition header if available

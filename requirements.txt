@@ -1,6 +1,11 @@
 # HDM - H2M Download Manager
 # Requirements file
 
-httpx>=0.27.0
+httpx[http2]>=0.27.0
 PySide6>=6.6.0
+yt-dlp>=2024.8.0
+imageio-ffmpeg>=0.5.1
+curl_cffi>=0.7.0
 pyinstaller>=6.0.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
