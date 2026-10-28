@@ -16,40 +16,97 @@
 
   // =========================================================================
   // 1. Sub-frame (iframe) Handler: Never draw UI inside an iframe!
-  //    Forward video detection to the top-level page so the button is
-  //    placed strictly OUTSIDE the iframe / player container.
+  //    Sniff Resource Timing & DOM inside the iframe and forward stream URLs
+  //    to window.top via postMessage.
   // =========================================================================
   if (!IS_TOP_WINDOW) {
-    let notifiedSrc = "";
+    let notifiedStream = "";
 
-    function notifyParentOfVideo() {
-      const vid = document.querySelector("video");
-      if (!vid) return;
-      const src = vid.currentSrc || vid.src || "";
-      if (src === notifiedSrc && notifiedSrc !== "") return;
-      notifiedSrc = src || "iframe_video";
+    function findStreamInSubframe() {
+      // 1. Check Resource Timing API (m3u8, mpd, mp4 loaded by hls.js / playerjs)
       try {
-        window.parent.postMessage(
-          {
-            type: "HDM_CHILD_VIDEO",
-            src: src && !src.startsWith("blob:") ? src : "",
-            title: document.title || "",
-          },
-          "*"
-        );
+        const entries = performance.getEntriesByType("resource");
+        for (let i = entries.length - 1; i >= 0; i--) {
+          const name = entries[i].name;
+          if (typeof name === "string") {
+            const clean = name.toLowerCase().split("?")[0].split("#")[0];
+            if (
+              (clean.endsWith(".m3u8") || name.toLowerCase().includes("m3u8") || name.toLowerCase().includes("/hls/")) &&
+              !clean.endsWith(".ts") &&
+              !clean.endsWith(".key") &&
+              !clean.endsWith(".js")
+            ) {
+              return entries[i].name;
+            }
+            if (clean.endsWith(".mpd") && !clean.endsWith(".m4s")) {
+              return entries[i].name;
+            }
+            if (clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".mkv")) {
+              return entries[i].name;
+            }
+          }
+        }
       } catch (e) {}
+
+      // 2. Check HTML5 <video> elements
+      const vid = document.querySelector("video");
+      if (vid) {
+        const src = vid.currentSrc || vid.src || "";
+        if (src && !src.startsWith("blob:")) {
+          return src;
+        }
+        const sources = vid.querySelectorAll("source");
+        for (const s of sources) {
+          if (s.src && !s.src.startsWith("blob:")) {
+            return s.src;
+          }
+        }
+      }
+      return "";
+    }
+
+    function notifyParent() {
+      const streamUrl = findStreamInSubframe();
+      const vid = document.querySelector("video");
+      if (!vid && !streamUrl) return;
+
+      if (streamUrl && streamUrl !== notifiedStream) {
+        notifiedStream = streamUrl;
+        try {
+          window.parent.postMessage(
+            {
+              type: "HDM_CHILD_STREAM",
+              url: streamUrl,
+              title: document.title || "",
+            },
+            "*"
+          );
+        } catch (e) {}
+      } else {
+        try {
+          window.parent.postMessage(
+            {
+              type: "HDM_CHILD_VIDEO",
+              title: document.title || "",
+            },
+            "*"
+          );
+        } catch (e) {}
+      }
     }
 
     // Forward nested iframe messages up to window.top
     window.addEventListener("message", (e) => {
-      if (e.data && e.data.type === "HDM_CHILD_VIDEO") {
+      if (e.data && (e.data.type === "HDM_CHILD_VIDEO" || e.data.type === "HDM_CHILD_STREAM")) {
         try {
           window.parent.postMessage(e.data, "*");
         } catch (err) {}
       }
     });
 
-    const subObserver = new MutationObserver(notifyParentOfVideo);
+    const subObserver = new MutationObserver(() => {
+      notifyParent();
+    });
     subObserver.observe(document.documentElement || document.body, {
       childList: true,
       subtree: true,
@@ -58,12 +115,13 @@
     });
 
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", notifyParentOfVideo);
+      document.addEventListener("DOMContentLoaded", notifyParent);
     } else {
-      notifyParentOfVideo();
+      notifyParent();
     }
-    setTimeout(notifyParentOfVideo, 1000);
-    setTimeout(notifyParentOfVideo, 3000);
+    setTimeout(notifyParent, 800);
+    setTimeout(notifyParent, 2000);
+    setTimeout(notifyParent, 4000);
     return;
   }
 
@@ -115,7 +173,23 @@
   ];
 
   let lastSniffedMedia = null;
-  const activeButtons = []; // Array of { targetEl, wrap, qualityMenu, updatePos, mediaOverride }
+  const activeButtons = []; // Array of { targetEl, wrap, btn, qualityMenu, updatePos, mediaOverride }
+
+  // Query background for already sniffed media streams on page load
+  function syncCapturedMediaFromBackground() {
+    try {
+      chrome.runtime.sendMessage({ action: "get_captured_media" }, (res) => {
+        if (chrome.runtime.lastError) return;
+        if (res && res.media && res.media.length > 0) {
+          lastSniffedMedia = res.media[0];
+          activeButtons.forEach((entry) => {
+            if (!entry.mediaOverride) entry.mediaOverride = lastSniffedMedia;
+          });
+        }
+      });
+    } catch (e) {}
+  }
+  syncCapturedMediaFromBackground();
 
   function isYouTube() {
     return (
@@ -149,8 +223,38 @@
   }
 
   /**
-   * Given a <video>, <iframe>, or inner player element, resolve the clean
-   * outer video/stream player box whose bounding rect represents the player frame.
+   * Scan top window's Resource Timing for any m3u8/mpd/video stream.
+   */
+  function findStreamUrlInTopWindow() {
+    try {
+      const entries = performance.getEntriesByType("resource");
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const name = entries[i].name;
+        if (typeof name === "string") {
+          const clean = name.toLowerCase().split("?")[0].split("#")[0];
+          if (
+            (clean.endsWith(".m3u8") || name.toLowerCase().includes("m3u8") || name.toLowerCase().includes("/hls/")) &&
+            !clean.endsWith(".ts") &&
+            !clean.endsWith(".key") &&
+            !clean.endsWith(".js")
+          ) {
+            return entries[i].name;
+          }
+          if (clean.endsWith(".mpd") && !clean.endsWith(".m4s")) {
+            return entries[i].name;
+          }
+          if (clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".mkv")) {
+            return entries[i].name;
+          }
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * Given a <video>, <iframe>, or inner player element, resolve the outermost
+   * player container whose bounding rect represents the video/stream box.
    */
   function resolvePlayerBox(el) {
     if (!el || el === document.body || el === document.documentElement) return null;
@@ -192,10 +296,21 @@
     if (isYouTube()) {
       return window.location.href;
     }
+
     if (lastSniffedMedia && lastSniffedMedia.url) {
       return lastSniffedMedia.url;
     }
+
+    const perfStream = findStreamUrlInTopWindow();
+    if (perfStream) {
+      return perfStream;
+    }
+
     if (videoOrBox) {
+      if (videoOrBox.__hdm_stream_url__) {
+        return videoOrBox.__hdm_stream_url__;
+      }
+
       const vid =
         videoOrBox.tagName === "VIDEO"
           ? videoOrBox
@@ -214,14 +329,11 @@
           }
         }
       }
-      if (videoOrBox.__hdm_iframe_src__) {
-        return videoOrBox.__hdm_iframe_src__;
-      }
     }
     return window.location.href;
   }
 
-  function triggerDownload(formatType, qualityType, sourceBtn, targetEl, mediaOverride) {
+  async function triggerDownload(formatType, qualityType, sourceBtn, targetEl, mediaOverride) {
     const originalHtml = sourceBtn ? sourceBtn.innerHTML : "";
     if (sourceBtn) {
       sourceBtn.classList.add("loading");
@@ -229,28 +341,50 @@
     }
 
     const pageUrl = window.location.href;
-    const targetUrl =
+
+    // Refresh captured media from background before triggering
+    let finalTargetUrl =
       (mediaOverride && mediaOverride.url) ||
       (lastSniffedMedia && lastSniffedMedia.url) ||
       getVideoSource(targetEl);
 
+    // If still resolved to page HTML, try background synchronously
+    if (
+      !isYouTube() &&
+      (!finalTargetUrl ||
+        finalTargetUrl === pageUrl ||
+        finalTargetUrl.endsWith(".html") ||
+        finalTargetUrl.endsWith(".htm"))
+    ) {
+      try {
+        const res = await new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: "get_captured_media" }, resolve);
+        });
+        if (res && res.media && res.media.length > 0) {
+          finalTargetUrl = res.media[0].url;
+          lastSniffedMedia = res.media[0];
+        }
+      } catch (e) {}
+    }
+
     const title =
       (mediaOverride && mediaOverride.title) ||
+      (lastSniffedMedia && lastSniffedMedia.title) ||
       getVideoTitle();
 
-    const isStreamManifest = targetUrl.includes(".m3u8") || targetUrl.includes(".mpd");
+    const isStreamManifest = finalTargetUrl.includes(".m3u8") || finalTargetUrl.includes(".mpd");
 
     chrome.runtime.sendMessage(
       {
         action: "download_media",
         data: {
-          url: targetUrl,
+          url: finalTargetUrl,
           pageUrl: pageUrl,
           title: title,
           format: formatType || "mp4",
           quality: qualityType || "",
           ext: mediaOverride && mediaOverride.ext ? mediaOverride.ext : (formatType === "mp3" ? "mp3" : "mp4"),
-          isStreaming: isYouTube() || isStreamManifest || targetUrl === pageUrl,
+          isStreaming: isYouTube() || isStreamManifest || finalTargetUrl === pageUrl,
         },
       },
       (res) => {
@@ -276,7 +410,7 @@
           if (sourceBtn) {
             sourceBtn.classList.add("success");
             sourceBtn.innerHTML = SVG_CHECK_ICON;
-            sourceBtn.setAttribute("title", "✓ Đã mở HDM thành công!");
+            sourceBtn.setAttribute("title", "✓ Đã gửi lệnh tải tới HDM!");
             setTimeout(() => {
               sourceBtn.classList.remove("success");
               sourceBtn.innerHTML = originalHtml;
@@ -309,8 +443,8 @@
       if (
         r1.width > 0 &&
         r2.width > 0 &&
-        Math.abs(r1.top - r2.top) < 40 &&
-        Math.abs(r1.left - r2.left) < 40
+        Math.abs(r1.top - r2.top) < 30 &&
+        Math.abs(r1.left - r2.left) < 30
       ) {
         return entry;
       }
@@ -318,10 +452,6 @@
     return null;
   }
 
-  /**
-   * Check if a viewport coordinate (x, y) is covered by a fixed/sticky top header
-   * (such as YouTube's masthead bar).
-   */
   function isCoveredByFixedHeader(x, y, playerEl) {
     if (y < 4) return true;
     try {
@@ -415,10 +545,6 @@
     const targetEl = resolvePlayerBox(playerBox);
     if (!targetEl || targetEl.__hdm_dismissed__) return;
 
-    // Remove fallback fixed button if a real player box is now available
-    const fixedBtn = document.querySelector(".hdm-btn-wrap.hdm-pos-fixed");
-    if (fixedBtn) fixedBtn.remove();
-
     const existing = isAlreadyTracked(targetEl);
     if (existing) {
       if (mediaOverride) existing.mediaOverride = mediaOverride;
@@ -431,12 +557,12 @@
 
     const btn = document.createElement("div");
     btn.className = "hdm-outside-btn";
-    btn.setAttribute("title", "Tải video với HDM (Bấm để chọn định dạng & chất lượng)");
+    btn.setAttribute("title", "Tải video với HDM (Nhấn để chọn chất lượng)");
     btn.innerHTML = SVG_DOWNLOAD_ICON;
 
     const closeBtn = document.createElement("div");
     closeBtn.className = "hdm-close-x";
-    closeBtn.setAttribute("title", "Ẩn nút tải này");
+    closeBtn.setAttribute("title", "Ẩn nút tải");
     closeBtn.innerHTML = "&times;";
 
     const qualityMenu = document.createElement("div");
@@ -452,11 +578,26 @@
     const entry = {
       targetEl: targetEl,
       wrap: wrap,
+      btn: btn,
       qualityMenu: qualityMenu,
       mediaOverride: mediaOverride || null,
       updatePos: updatePlacement,
+      lastTop: 0,
+      lastLeft: 0,
     };
     activeButtons.push(entry);
+
+    function repositionMenu() {
+      if (!qualityMenu.classList.contains("show")) return;
+      const rect = btn.getBoundingClientRect();
+      const menuH = qualityMenu.offsetHeight || 310;
+      let top = rect.bottom + 6;
+      if (top + menuH > window.innerHeight && rect.top > menuH + 10) {
+        top = rect.top - menuH - 6;
+      }
+      qualityMenu.style.top = `${Math.max(6, top)}px`;
+      qualityMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - 275, rect.left))}px`;
+    }
 
     function updatePlacement() {
       if (!targetEl.isConnected) {
@@ -481,8 +622,8 @@
       const leftPage = Math.round(window.scrollX + Math.max(6, rect.left + 4));
       const candidateTopViewportY = rect.top - 20;
 
-      // Place strictly ABOVE the top-left of the video box if space above is clear;
-      // otherwise place strictly BELOW the bottom-left of the video box.
+      // Place strictly ABOVE top-left of video box if space above is clear;
+      // otherwise place strictly BELOW bottom-left of video box.
       let topPage;
       if (rect.top >= 38 && !isCoveredByFixedHeader(rect.left + 18, candidateTopViewportY, targetEl)) {
         topPage = Math.round(window.scrollY + rect.top - 34);
@@ -490,23 +631,21 @@
         topPage = Math.round(window.scrollY + rect.bottom + 6);
       }
 
-      wrap.style.setProperty("top", `${topPage}px`, "important");
-      wrap.style.setProperty("left", `${leftPage}px`, "important");
+      if (Math.abs(entry.lastTop - topPage) > 1 || Math.abs(entry.lastLeft - leftPage) > 1) {
+        entry.lastTop = topPage;
+        entry.lastLeft = leftPage;
+        wrap.style.setProperty("top", `${topPage}px`, "important");
+        wrap.style.setProperty("left", `${leftPage}px`, "important");
+        repositionMenu();
+      }
     }
 
     updatePlacement();
-
-    let resizeObs = null;
-    if (typeof ResizeObserver !== "undefined") {
-      resizeObs = new ResizeObserver(updatePlacement);
-      resizeObs.observe(targetEl);
-    }
 
     closeBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       targetEl.__hdm_dismissed__ = true;
-      if (resizeObs) resizeObs.disconnect();
       qualityMenu.remove();
       wrap.style.opacity = "0";
       wrap.style.transform = "scale(0.8)";
@@ -522,27 +661,19 @@
         e.preventDefault();
         e.stopPropagation();
       }
+
       if (qualityMenu.classList.contains("show")) {
         qualityMenu.classList.remove("show");
         return;
       }
 
+      // Close other open quality menus
       document.querySelectorAll(".hdm-quality-menu.show").forEach((m) => {
         if (m !== qualityMenu) m.classList.remove("show");
       });
 
-      qualityMenu.style.visibility = "hidden";
       qualityMenu.classList.add("show");
-      const menuH = qualityMenu.offsetHeight || 310;
-      qualityMenu.style.visibility = "";
-
-      const rect = btn.getBoundingClientRect();
-      let top = rect.bottom + 6;
-      if (top + menuH > window.innerHeight && rect.top > menuH + 10) {
-        top = rect.top - menuH - 6;
-      }
-      qualityMenu.style.top = `${Math.max(6, top)}px`;
-      qualityMenu.style.left = `${Math.max(8, Math.min(window.innerWidth - 270, rect.left))}px`;
+      repositionMenu();
     }
 
     btn.addEventListener("click", toggleMenu);
@@ -566,8 +697,9 @@
       }
     });
 
+    // Close menu when clicking outside
     document.addEventListener("click", (e) => {
-      if (!qualityMenu.contains(e.target) && !btn.contains(e.target)) {
+      if (!qualityMenu.contains(e.target) && !btn.contains(e.target) && !wrap.contains(e.target)) {
         qualityMenu.classList.remove("show");
       }
     });
@@ -576,9 +708,6 @@
   function updateAllPlacements() {
     for (const entry of activeButtons) {
       entry.updatePos();
-      if (entry.qualityMenu.classList.contains("show")) {
-        entry.qualityMenu.classList.remove("show");
-      }
     }
   }
 
@@ -587,20 +716,22 @@
   document.addEventListener("fullscreenchange", updateAllPlacements);
 
   /**
-   * Scan the page for any video element, known player wrapper, or video iframe.
+   * Scan page for any video element or player wrapper with debouncing.
    */
+  let scanDebounceTimer = null;
   function scanVideos() {
+    if (scanDebounceTimer) return;
+    scanDebounceTimer = setTimeout(() => {
+      scanDebounceTimer = null;
+      doScanVideos();
+    }, 300);
+  }
+
+  function doScanVideos() {
     chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
       if (!settings.enableVideoPanel) return;
 
-      // 1. Direct <video> elements
-      const videos = document.querySelectorAll("video");
-      videos.forEach((vid) => {
-        if (vid.offsetWidth < 120 && vid.offsetHeight < 80 && !isYouTube()) return;
-        createOutsideButton(vid);
-      });
-
-      // 2. Known video/stream player containers (Halim, Playerjs, ArtPlayer, JWPlayer, etc.)
+      // 1. Known video/stream player containers
       for (const sel of PLAYER_BOX_SELECTORS) {
         const boxes = document.querySelectorAll(sel);
         boxes.forEach((box) => {
@@ -610,12 +741,19 @@
         });
       }
 
+      // 2. Direct <video> elements
+      const videos = document.querySelectorAll("video");
+      videos.forEach((vid) => {
+        if (vid.offsetWidth < 120 && vid.offsetHeight < 80 && !isYouTube()) return;
+        createOutsideButton(vid);
+      });
+
       // 3. Embedded video/stream iframes
       const iframes = document.querySelectorAll(
         "iframe[src*='player'], iframe[src*='embed'], iframe[src*='video'], iframe[src*='stream'], iframe[src*='hls'], iframe[src*='m3u8'], iframe[allowfullscreen]"
       );
       iframes.forEach((ifr) => {
-        if (ifr.offsetWidth >= 220 && ifr.offsetHeight >= 130) {
+        if (ifr.offsetWidth >= 200 && ifr.offsetHeight >= 120) {
           createOutsideButton(ifr);
         }
       });
@@ -624,54 +762,41 @@
     });
   }
 
-  function attachSniffedMediaButton(media) {
-    chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
-      if (!settings.enableVideoPanel) return;
+  // Listen for child iframe video or stream detection via postMessage
+  window.addEventListener("message", (e) => {
+    if (!e.data) return;
 
-      lastSniffedMedia = media;
-
-      // Update any existing tracked button with the sniffed stream metadata
-      if (activeButtons.length > 0) {
-        activeButtons.forEach((entry) => {
-          entry.mediaOverride = media;
-          entry.updatePos();
-        });
-        return;
-      }
-
-      // Look for any player container or large iframe on the page
-      for (const sel of [...PLAYER_BOX_SELECTORS, "video"]) {
-        const el = document.querySelector(sel);
-        if (el && el.offsetWidth >= 140 && el.offsetHeight >= 90) {
-          createOutsideButton(el, media);
-          return;
-        }
-      }
-
+    if (e.data.type === "HDM_CHILD_STREAM" && e.data.url) {
+      lastSniffedMedia = {
+        url: e.data.url,
+        title: e.data.title || getVideoTitle(),
+        ext: e.data.url.includes(".mp3") ? "mp3" : "mp4",
+      };
       const iframes = document.querySelectorAll("iframe");
       for (const ifr of iframes) {
-        if (ifr.offsetWidth >= 180 && ifr.offsetHeight >= 110) {
-          createOutsideButton(ifr, media);
-          return;
-        }
-      }
-    });
-  }
-
-  // Listen for child iframe video detection via postMessage
-  window.addEventListener("message", (e) => {
-    if (!e.data || e.data.type !== "HDM_CHILD_VIDEO") return;
-    const iframes = document.querySelectorAll("iframe");
-    for (const ifr of iframes) {
-      try {
-        if (ifr.contentWindow === e.source) {
-          if (e.data.src) {
-            ifr.__hdm_iframe_src__ = e.data.src;
+        try {
+          if (ifr.contentWindow === e.source) {
+            ifr.__hdm_stream_url__ = e.data.url;
+            createOutsideButton(ifr, lastSniffedMedia);
+            break;
           }
-          createOutsideButton(ifr);
-          break;
-        }
-      } catch (err) {}
+        } catch (err) {}
+      }
+      activeButtons.forEach((entry) => {
+        entry.mediaOverride = lastSniffedMedia;
+      });
+      scanVideos();
+    } else if (e.data.type === "HDM_CHILD_VIDEO") {
+      const iframes = document.querySelectorAll("iframe");
+      for (const ifr of iframes) {
+        try {
+          if (ifr.contentWindow === e.source) {
+            createOutsideButton(ifr);
+            break;
+          }
+        } catch (err) {}
+      }
+      scanVideos();
     }
   });
 
@@ -679,7 +804,10 @@
   chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     if (req.action === "hdm_media_detected" && req.media) {
       lastSniffedMedia = req.media;
-      attachSniffedMediaButton(req.media);
+      activeButtons.forEach((entry) => {
+        entry.mediaOverride = req.media;
+      });
+      scanVideos();
       sendResponse({ ok: true });
     }
   });
@@ -694,10 +822,10 @@
   });
 
   window.addEventListener("yt-navigate-finish", () => {
-    setTimeout(scanVideos, 600);
+    setTimeout(scanVideos, 400);
   });
   window.addEventListener("popstate", () => {
-    setTimeout(scanVideos, 600);
+    setTimeout(scanVideos, 400);
   });
 
   if (document.readyState === "loading") {
@@ -706,6 +834,6 @@
     scanVideos();
   }
 
-  // Periodic layout sync for dynamic AJAX players
-  setInterval(updateAllPlacements, 1200);
+  // Periodic layout sync for dynamic players
+  setInterval(updateAllPlacements, 1500);
 })();

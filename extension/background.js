@@ -162,9 +162,52 @@ chrome.downloads.onCreated.addListener(async (item) => {
 function detectMediaType(rawUrl, mimeType = "") {
   if (!rawUrl || !rawUrl.startsWith("http")) return null;
   const url = rawUrl.toLowerCase();
-  const clean = url.split("?")[0];
+  const clean = url.split("?")[0].split("#")[0];
 
-  // Exclude non-media files & tiny segments
+  // Exclude ad networks & analytics
+  const adDomains = [
+    "google-analytics.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "facebook.com/tr",
+    "adservice.google.",
+    "adnxs.com",
+    "scorecardresearch.com",
+    "clarity.ms",
+    "hotjar.com",
+    "criteo.com",
+  ];
+  if (adDomains.some((d) => url.includes(d))) return null;
+
+  // 1. HLS m3u8 playlist (PRIORITY: Catch all HLS manifests)
+  if (
+    clean.endsWith(".m3u8") ||
+    url.includes(".m3u8") ||
+    url.includes("/hls/") ||
+    url.includes("m3u8") ||
+    mimeType.includes("mpegurl") ||
+    mimeType.includes("application/x-mpegurl") ||
+    mimeType.includes("application/vnd.apple.mpegurl") ||
+    mimeType.includes("audio/x-mpegurl")
+  ) {
+    // Avoid false positive on .ts / .key with m3u8 query
+    if (!clean.endsWith(".ts") && !clean.endsWith(".key") && !clean.endsWith(".js")) {
+      return { type: "m3u8", label: "HLS Stream (m3u8)", ext: "mp4", format: "mp4" };
+    }
+  }
+
+  // 2. DASH mpd manifest
+  if (
+    clean.endsWith(".mpd") ||
+    url.includes(".mpd") ||
+    mimeType.includes("application/dash+xml")
+  ) {
+    if (!clean.endsWith(".m4s")) {
+      return { type: "mpd", label: "DASH Stream (mpd)", ext: "mp4", format: "mp4" };
+    }
+  }
+
+  // Exclude non-media static files & tiny segments
   if (
     clean.endsWith(".ts") ||
     clean.endsWith(".m4s") ||
@@ -184,41 +227,6 @@ function detectMediaType(rawUrl, mimeType = "") {
     clean.endsWith(".woff2")
   ) {
     return null;
-  }
-
-  // Exclude ad networks & analytics
-  const adDomains = [
-    "google-analytics.com",
-    "doubleclick.net",
-    "googlesyndication.com",
-    "facebook.com/tr",
-    "adservice.google.",
-    "adnxs.com",
-    "scorecardresearch.com",
-    "clarity.ms",
-    "hotjar.com",
-    "criteo.com",
-  ];
-  if (adDomains.some((d) => url.includes(d))) return null;
-
-  // 1. HLS m3u8 playlist
-  if (
-    clean.endsWith(".m3u8") ||
-    url.includes(".m3u8?") ||
-    (url.includes("/hls/") && url.includes(".m3u8")) ||
-    mimeType.includes("application/vnd.apple.mpegurl") ||
-    mimeType.includes("application/x-mpegurl")
-  ) {
-    return { type: "m3u8", label: "HLS Stream (m3u8)", ext: "mp4", format: "mp4" };
-  }
-
-  // 2. DASH mpd manifest
-  if (
-    clean.endsWith(".mpd") ||
-    url.includes(".mpd?") ||
-    mimeType.includes("application/dash+xml")
-  ) {
-    return { type: "mpd", label: "DASH Stream (mpd)", ext: "mp4", format: "mp4" };
   }
 
   // 3. Direct video files
@@ -254,12 +262,77 @@ function detectMediaType(rawUrl, mimeType = "") {
   return null;
 }
 
-// Sniff headers of completed network requests
-chrome.webRequest.onHeadersReceived.addListener(
-  async (details) => {
-    const tabId = details.tabId;
-    if (tabId < 0) return;
+// Record captured media item into tab cache
+async function recordCapturedMedia(tabId, url, mimeType = "") {
+  if (tabId < 0) return;
+  const mediaInfo = detectMediaType(url, mimeType);
+  if (!mediaInfo) return;
 
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab) return;
+
+    if (tab.url && (tab.url.includes("youtube.com") || tab.url.includes("youtu.be"))) {
+      return;
+    }
+
+    let list = capturedMediaByTab.get(tabId);
+    if (!list) {
+      list = [];
+      capturedMediaByTab.set(tabId, list);
+    }
+
+    const isDup = list.some((item) => item.url === url);
+    if (isDup) return;
+
+    let rawTitle = tab.title || "";
+    rawTitle = rawTitle
+      .replace(/\s*[-–|]\s*(Xem phim|Phim HD|Trang chủ|Official Website|Thuyết minh|Vietsub).*$/i, "")
+      .replace(/\s*[-–|]\s*YouTube$/i, "")
+      .trim();
+
+    if (!rawTitle) {
+      const uParts = url.split("/").pop().split("?")[0];
+      rawTitle = uParts.replace(/\.[a-zA-Z0-9]+$/, "") || "video";
+    }
+
+    const mediaItem = {
+      id: `${tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      url: url,
+      pageUrl: tab.url || "",
+      title: rawTitle,
+      type: mediaInfo.type,
+      label: mediaInfo.label,
+      ext: mediaInfo.ext,
+      format: mediaInfo.format,
+      timestamp: Date.now(),
+    };
+
+    list.unshift(mediaItem);
+    if (list.length > 25) list.pop();
+
+    chrome.action.setBadgeText({ tabId, text: String(list.length) });
+    chrome.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" });
+
+    chrome.tabs.sendMessage(tabId, {
+      action: "hdm_media_detected",
+      media: mediaItem,
+      totalCount: list.length,
+    }).catch(() => {});
+  } catch (err) {}
+}
+
+// 1. Sniff URL as soon as network request begins (instant m3u8 detection)
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    recordCapturedMedia(details.tabId, details.url);
+  },
+  { urls: ["<all_urls>"] }
+);
+
+// 2. Sniff response headers to detect MIME types for extensionless URLs
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
     let mimeType = "";
     if (details.responseHeaders) {
       const ct = details.responseHeaders.find(
@@ -269,69 +342,7 @@ chrome.webRequest.onHeadersReceived.addListener(
         mimeType = ct.value.toLowerCase();
       }
     }
-
-    const mediaInfo = detectMediaType(details.url, mimeType);
-    if (!mediaInfo) return;
-
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (!tab) return;
-
-      // Skip internal YouTube chunks since HDM handles full YouTube pages natively
-      if (tab.url && (tab.url.includes("youtube.com") || tab.url.includes("youtu.be"))) {
-        return;
-      }
-
-      let list = capturedMediaByTab.get(tabId);
-      if (!list) {
-        list = [];
-        capturedMediaByTab.set(tabId, list);
-      }
-
-      // Deduplicate: avoid duplicate streams
-      const isDup = list.some((item) => item.url === details.url);
-      if (isDup) return;
-
-      // Clean title from tab or URL
-      let rawTitle = tab.title || "";
-      rawTitle = rawTitle
-        .replace(/\s*[-–|]\s*(Xem phim|Phim HD|Trang chủ|Official Website|Thuyết minh|Vietsub).*$/i, "")
-        .replace(/\s*[-–|]\s*YouTube$/i, "")
-        .trim();
-
-      if (!rawTitle) {
-        const uParts = details.url.split("/").pop().split("?")[0];
-        rawTitle = uParts.replace(/\.[a-zA-Z0-9]+$/, "") || "video";
-      }
-
-      const mediaItem = {
-        id: `${tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        url: details.url,
-        pageUrl: tab.url || "",
-        title: rawTitle,
-        type: mediaInfo.type,
-        label: mediaInfo.label,
-        ext: mediaInfo.ext,
-        format: mediaInfo.format,
-        timestamp: Date.now(),
-      };
-
-      list.unshift(mediaItem);
-      if (list.length > 25) list.pop();
-
-      // Update extension toolbar badge
-      chrome.action.setBadgeText({ tabId, text: String(list.length) });
-      chrome.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" });
-
-      // Notify content script in the tab
-      chrome.tabs.sendMessage(tabId, {
-        action: "hdm_media_detected",
-        media: mediaItem,
-        totalCount: list.length,
-      }).catch(() => {});
-    } catch (err) {
-      // Tab may have closed or navigated
-    }
+    recordCapturedMedia(details.tabId, details.url, mimeType);
   },
   { urls: ["<all_urls>"] },
   ["responseHeaders"]
@@ -406,8 +417,40 @@ function sanitizeFilename(name) {
     .trim();
 }
 
-async function handleMediaDownload(data) {
-  const targetUrl = data.url || data.pageUrl;
+async function handleMediaDownload(data, sender) {
+  let targetUrl = data.url || data.pageUrl;
+  const tabId = (sender && sender.tab && sender.tab.id) || null;
+
+  // CRITICAL FIX: If targetUrl is an HTML web page (ends in .html, .htm or matches pageUrl)
+  // or does not look like a media stream (no m3u8/mpd/mp4), substitute with the real
+  // video/stream URL sniffed for this tab!
+  const isHtmlOrPageUrl =
+    !targetUrl ||
+    targetUrl.endsWith(".html") ||
+    targetUrl.endsWith(".htm") ||
+    targetUrl === data.pageUrl ||
+    (!targetUrl.includes(".m3u8") &&
+      !targetUrl.includes("m3u8") &&
+      !targetUrl.includes(".mpd") &&
+      !targetUrl.match(/\.(mp4|webm|mkv|m4v|mov|flv)($|\?)/i));
+
+  const isYouTube = targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be");
+
+  if (!isYouTube && isHtmlOrPageUrl && tabId) {
+    const list = capturedMediaByTab.get(tabId) || [];
+    if (list.length > 0) {
+      // Pick the most recent media stream captured for this tab
+      const best = list[0];
+      targetUrl = best.url;
+      if (!data.title && best.title) {
+        data.title = best.title;
+      }
+      if (best.ext) {
+        data.ext = best.ext;
+      }
+    }
+  }
+
   const cookies = await getCookiesForUrl(targetUrl);
   const ext = data.format === "mp3" ? "mp3" : (data.ext || "mp4");
   const filename = data.title ? `${sanitizeFilename(data.title)}.${ext}` : "";
@@ -451,7 +494,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     showHDMWindow().then(() => sendResponse({ ok: true }));
     return true;
   } else if (req.action === "download_media") {
-    handleMediaDownload(req.data).then(sendResponse);
+    handleMediaDownload(req.data, sender).then(sendResponse);
     return true;
   } else if (req.action === "get_captured_media") {
     const tabId = req.tabId || (sender && sender.tab && sender.tab.id);
