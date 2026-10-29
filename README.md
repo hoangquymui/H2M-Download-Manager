@@ -33,7 +33,7 @@
   - Tùy chọn tự động phân luồng lưu vào các thư mục con tương ứng.
 - **Tích hợp Khay Hệ thống (System Tray)**: Thu nhỏ xuống khay đồng hồ, hiển thị thông báo khi tải hoàn tất.
 
-### 4. Tích hợp Trình duyệt (Chrome / Edge / Cốc Cốc / Brave)
+### 4. Tích hợp Trình duyệt (Chrome / Edge / Cốc Cốc / Brave / Firefox)
 - Tiện ích mở rộng **Manifest V3** giao tiếp với máy chủ HTTP cục bộ chạy nền tại `http://127.0.0.1:9618`.
 - **Bắt link tự động an toàn**: Tạm dừng lượt tải trên trình duyệt -> Chuyển sang HDM -> Nếu HDM nhận thì hủy trên trình duyệt; nếu HDM chưa bật thì trình duyệt tiếp tục tải bình thường không làm gián đoạn người dùng.
 - Menu chuột phải tiện lợi: "Tải liên kết này với HDM", "Tải đa phương tiện (Video/Audio) với HDM".
@@ -69,13 +69,14 @@ H2M Download Manager/
 │       ├── formatters.py     # Định dạng dung lượng, tốc độ, thời gian ETA
 │       ├── category.py       # Phân loại tệp tin theo đuôi mở rộng
 │       └── system.py         # Tương tác hệ điều hành Windows Explorer, AppData
-├── extension/                # Tiện ích mở rộng Chrome / Edge (Manifest V3)
+├── extension/                # Tiện ích mở rộng Chromium (Manifest V3)
 │   ├── manifest.json
 │   ├── background.js         # Service worker bắt link tải
 │   ├── popup.html, popup.js, popup.css # Giao diện popup tiện ích
 │   └── icons/                # Bộ biểu tượng 16, 32, 48, 128 px
 ├── app.ico                   # Biểu tượng ứng dụng Windows
 ├── build_exe.py              # Script đóng gói ra file .exe độc lập (PyInstaller)
+├── build_extension.py        # Sinh bản tiện ích cho Chromium và Firefox (kèm zip)
 ├── requirements.txt          # Danh sách thư viện phụ thuộc
 ├── main.py                   # Điểm chạy nhanh ứng dụng
 └── README.md
@@ -98,7 +99,23 @@ python main.py
 
 ---
 
-## 🌐 Hướng dẫn Cài đặt Tiện ích Trình duyệt (Chrome / Edge / Cốc Cốc / Brave)
+## 🌐 Hướng dẫn Cài đặt Tiện ích Trình duyệt
+
+### Cài từ HDM (khuyến nghị)
+
+HDM tự mở hộp thoại hướng dẫn này mỗi lần khởi động cho tới khi bạn tick **Không hiện lại** rồi bấm **OK** (lựa chọn được lưu vào cấu hình). Có thể mở lại bất cứ lúc nào từ **Công cụ → Cài đặt tiện ích trình duyệt…**
+
+Trong HDM vào **Công cụ → Cài đặt tiện ích trình duyệt…**:
+
+1. HDM tự phát hiện các trình duyệt đã cài (Chrome, Edge, Cốc Cốc, Brave, Vivaldi, Chromium, Firefox).
+2. Chọn trình duyệt đang dùng. HDM copy tiện ích vào `%APPDATA%\HDM\extension` (đường dẫn cố định để ID tiện ích không đổi khi cập nhật app) và hiện hướng dẫn từng bước kèm đường dẫn thư mục.
+3. Bấm **Mở Chrome/Edge/…** để mở trình duyệt (địa chỉ trang quản lý tiện ích được sao chép sẵn), rồi bấm **Mở thư mục** hoặc **Sao chép** đường dẫn và làm theo hướng dẫn:
+   - **Chromium** (Chrome, Edge, Cốc Cốc, Brave, Vivaldi, Chromium): bật **Chế độ dành cho nhà phát triển** → **Tải tiện ích chưa đóng gói** → chọn thư mục ở trên.
+   - **Firefox**: mở `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** → chọn `manifest.json` trong thư mục đó.
+
+> Chrome từ bản 156, Cốc Cốc và Firefox đều chặn cài tiện ích cục bộ không cần thao tác, nên các bước trên là mức tự động tối đa mà trình duyệt cho phép. Firefox chỉ giữ tiện ích tạm thời tới khi đóng trình duyệt; muốn cố định cần bản đã ký trên AMO.
+
+### Chromium (Chrome / Edge / Cốc Cốc / Brave) — thủ công
 
 1. Mở trình duyệt và truy cập trang quản lý tiện ích:
    - **Google Chrome**: `chrome://extensions`
@@ -107,21 +124,53 @@ python main.py
    - **Brave**: `brave://extensions`
 2. Bật công tắc **Chế độ dành cho nhà phát triển (Developer mode)** ở góc trên bên phải.
 3. Bấm vào nút **Tải tiện ích đã giải nén (Load unpacked)**.
-4. Điều hướng và chọn thư mục `extension` trong mã nguồn dự án.
+4. Điều hướng và chọn thư mục `extension` trong mã nguồn dự án (bản cài đặt: thư mục `extension` cạnh `HDM.exe`).
 5. Ghim biểu tượng HDM lên thanh công cụ của trình duyệt. Tiện ích sẽ tự động đồng bộ liên kết với HDM Desktop qua cổng `127.0.0.1:9618`.
+
+### Firefox (128 trở lên)
+
+Firefox không hỗ trợ `background.service_worker` của Manifest V3 và cần Gecko ID, nên dùng bản build riêng được sinh từ cùng mã nguồn:
+
+```powershell
+python build_extension.py firefox
+```
+
+1. Mở `about:debugging#/runtime/this-firefox`.
+2. Bấm **Load Temporary Add-on…** và chọn `dist/extension-firefox/manifest.json`.
+3. Để cài lâu dài, nộp `dist/HDM-extension-firefox.zip` lên [addons.mozilla.org](https://addons.mozilla.org/developers/) để ký (hoặc dùng Firefox Developer Edition/ESR với `xpinstall.signatures.required = false`).
+
+Lưu ý: từ Firefox 127, quyền truy cập trang (`<all_urls>`) được hiển thị trong hộp thoại cài đặt và cấp ngay khi cài; nếu người dùng thu hồi trong `about:addons` → **Permissions**, tiện ích sẽ không bắt được luồng phát.
+
+`python build_extension.py` (không tham số) sinh cả hai bản kèm file zip để phát hành lên Chrome Web Store / Edge Add-ons / AMO.
 
 ---
 
-## 📦 Hướng dẫn Đóng gói Thành File `.exe` Độc lập
+## 📦 Hướng dẫn Đóng gói Bộ cài (Nuitka + Inno Setup)
 
-Dự án đã tích hợp sẵn script tự động build qua PyInstaller:
+Bản phát hành dùng **Nuitka** biên dịch Python sang C (không kèm `.py`/`.pyc`, khó dịch ngược hơn PyInstaller) và chạy dạng **standalone** — mở app tức thì, không giải nén ra thư mục tạm như `--onefile`:
+
+```powershell
+python build_nuitka.py        # lần đầu 30–60 phút (biên dịch C toàn bộ)
+python build_installer.py     # đóng gói bằng Inno Setup
+```
+
+Kết quả:
+```
+dist/HDM/HDM.exe                  # thư mục standalone, mở cực nhanh
+dist/HDM/extension/               # tiện ích cho Chrome / Edge / Cốc Cốc / Brave
+dist/HDM/extension-firefox/       # tiện ích cho Firefox 128+
+dist/HDM_Setup_v1.0.0.exe         # bộ cài duy nhất, có icon Desktop
+```
+
+Yêu cầu: MSVC (Visual Studio Build Tools) hoặc để Nuitka tự tải MinGW64; [Inno Setup 6](https://jrsoftware.org/isdl.php) cho bước tạo bộ cài. Bộ cài mặc định cài theo từng người dùng (`%LOCALAPPDATA%\Programs\HDM`, không cần UAC) và tạo lối tắt Desktop + Start Menu.
+
+Vẫn có thể dùng PyInstaller nếu cần build nhanh để test nội bộ:
+
 ```powershell
 python build_exe.py
 ```
-Sau khi hoàn tất, thư mục chứa ứng dụng độc lập không cần cài đặt môi trường Python sẽ nằm tại:
-```
-dist/HDM/HDM.exe
-```
+
+Lưu ý: Nuitka biên dịch mã Python sang mã máy nên khó dịch ngược hơn nhiều, nhưng không phải “bảo vệ 100%” — chuỗi, tài nguyên nhúng và mã JavaScript của extension vẫn có thể đọc được. Ngoài ra, build Nuitka lần đầu cần tải Qt/yt-dlp nên dung lượng `dist/HDM` lớn hơn bản PyInstaller.
 
 ---
 

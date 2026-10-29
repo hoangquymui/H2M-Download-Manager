@@ -33,6 +33,12 @@ def build():
         "--onedir",  # onedir is faster to launch and avoids temp unpack latency
         f"--icon={ico_path}",
         f"--add-data={ico_path};.",
+        # yt-dlp loads extractors/components dynamically; EJS is the JS
+        # challenge solver used by YouTube, and imageio-ffmpeg provides the
+        # merge/convert binary when no system ffmpeg exists.
+        "--collect-all=yt_dlp",
+        "--collect-all=yt_dlp_ejs",
+        "--collect-all=imageio_ffmpeg",
         "--clean",
         "--noconfirm",
         main_py,
@@ -51,6 +57,11 @@ def build():
         if os.path.exists(ext_src):
             shutil.copytree(ext_src, ext_dst, dirs_exist_ok=True)
             print(f" Extension copied: {ext_dst}")
+
+        # dist/ is cleared above, so regenerate the browser bundles too.
+        import build_extension
+        for target in ("chrome", "firefox"):
+            build_extension.build(target)
         print("\n" + "=" * 60)
         print(" [SUCCESS] HDM has been successfully built!")
         print(f" Output folder: {os.path.join(dist_dir, 'HDM')}")
