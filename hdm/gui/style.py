@@ -443,6 +443,51 @@ QListWidget#sidebar::item:disabled {
     letter-spacing: 0.8px;
 }
 
+/* Extension installer dialog */
+QListWidget#ext_list {
+    background-color: $panel_alt;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 4px;
+    outline: none;
+}
+QListWidget#ext_list::item {
+    padding: 7px 10px;
+    border-radius: 6px;
+    color: $text_muted;
+}
+QListWidget#ext_list::item:hover {
+    background-color: $elevated;
+    color: $text;
+}
+QListWidget#ext_list::item:selected {
+    background-color: $accent_soft;
+    color: $text_strong;
+}
+QLabel#ext_hint {
+    color: $text_muted;
+    font-size: 12px;
+}
+QLabel#ext_guide_title {
+    color: $text_strong;
+    font-size: 13px;
+    font-weight: 700;
+}
+QLabel#ext_guide {
+    color: $text_muted;
+    font-size: 13px;
+}
+QLineEdit#ext_path {
+    background-color: $panel_alt;
+    border: 1px solid $border;
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: $text;
+    font-size: 12px;
+    selection-background-color: $accent_soft;
+    selection-color: $text_strong;
+}
+
 
 /* ===================== Content area & page header ===================== */
 QWidget#content_area { background-color: $bg; }

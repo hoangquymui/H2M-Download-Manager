@@ -7,7 +7,7 @@ progress updates.
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject, QSize
 from PySide6.QtGui import QAction, QCloseEvent, QCursor, QKeySequence, QColor, QFont
@@ -43,6 +43,7 @@ from hdm.core.manager import DownloadQueueManager
 from hdm.core.models import DownloadTask, TaskStatus
 from hdm.gui.add_dialog import AddDownloadDialog
 from hdm.gui.detail_dialog import DownloadDetailDialog
+from hdm.gui.extension_dialog import ExtensionInstallDialog
 from hdm.gui.icons import get_icon
 from hdm.gui.settings_dialog import SettingsDialog
 from hdm.gui.style import apply_theme, current_theme, get_palette, normalize_theme
@@ -152,6 +153,7 @@ class MainWindow(QMainWindow):
 
         self._active_confirm_dialog: Optional[AddDownloadDialog] = None
         self._pending_download_requests: List[Dict[str, Any]] = []
+        self._duplicate_confirm_request_ids: List[str] = []
 
         self._force_quit: bool = False
         self._tray_notified: bool = False
@@ -528,7 +530,7 @@ class MainWindow(QMainWindow):
         self.menu_tools.addAction(self.act_toggle_theme)
 
         self.act_ext = QAction(tr("menu_install_extension"), self)
-        self.act_ext.triggered.connect(self._open_extension_dir)
+        self.act_ext.triggered.connect(self.show_extension_dialog)
         self.menu_tools.addAction(self.act_ext)
 
         # Help Menu
@@ -766,6 +768,24 @@ class MainWindow(QMainWindow):
 
         self.show_confirm_download_dialog({"url": url, "is_captured": False})
 
+    def _resolve_dialog_request(
+        self, request_id: str, accepted: bool, failed: bool = False
+    ) -> None:
+        """Let the browser extension know whether HDM actually took the download.
+
+        ``failed`` (dialog accepted but the task could not be added) is reported
+        as undecided so the extension keeps its paused browser download.
+        """
+        if not request_id:
+            return
+        result = None if failed else accepted
+        engine_thread = getattr(self, "engine_thread", None)
+        if engine_thread and hasattr(engine_thread, "notify_dialog_result"):
+            try:
+                engine_thread.notify_dialog_result(request_id, result)
+            except Exception:
+                pass
+
     def show_confirm_download_dialog(self, data: dict) -> None:
         """Display IDM-style download confirmation modal with file probe and actions."""
         url = data.get("url", "")
@@ -773,6 +793,9 @@ class MainWindow(QMainWindow):
         headers = data.get("headers", {})
         is_captured = data.get("is_captured", True)
         quality = data.get("quality", "")
+        manifest = data.get("manifest", "")
+        qualities = data.get("qualities") or []
+        request_id = data.get("request_id", "")
 
         # If a dialog is already showing:
         if self._active_confirm_dialog and self._active_confirm_dialog.isVisible():
@@ -780,6 +803,10 @@ class MainWindow(QMainWindow):
             if getattr(self._active_confirm_dialog, "initial_url", "") == url:
                 self._active_confirm_dialog.raise_()
                 self._active_confirm_dialog.activateWindow()
+                # Keep this browser copy paused and resolve it together with the
+                # open dialog; releasing it now would download the same file twice.
+                if request_id:
+                    self._duplicate_confirm_request_ids.append(request_id)
                 return
             # Otherwise queue the request to avoid nested modal event loops
             self._pending_download_requests.append(data)
@@ -795,9 +822,13 @@ class MainWindow(QMainWindow):
             custom_headers=headers,
             is_captured=is_captured,
             initial_quality=quality,
+            initial_manifest=manifest,
+            initial_qualities=qualities,
             parent=None if is_captured else self,
         )
         self._active_confirm_dialog = dlg
+        accepted = False
+        task_failed = False
         try:
             if is_captured:
                 from PySide6.QtGui import QCursor
@@ -813,20 +844,30 @@ class MainWindow(QMainWindow):
 
             if dlg.exec():
                 res = dlg.get_result_data()
-                self.manager.add_task(
-                    url=res["url"],
-                    save_dir=res["save_dir"],
-                    filename=res["filename"],
-                    headers=res.get("headers"),
-                    connections=res["connections"],
-                    auto_start=res["auto_start"],
-                    quality=res.get("quality", ""),
-                    category=res.get("category"),
-                )
+                try:
+                    self.manager.add_task(
+                        url=res["url"],
+                        save_dir=res["save_dir"],
+                        filename=res["filename"],
+                        headers=res.get("headers"),
+                        connections=res["connections"],
+                        auto_start=res["auto_start"],
+                        quality=res.get("quality", ""),
+                        category=res.get("category"),
+                        manifest=res.get("manifest", ""),
+                    )
+                    accepted = True
+                except Exception as e:
+                    task_failed = True
+                    QMessageBox.warning(self, tr("table_status"), str(e))
                 if not is_captured:
                     self.show_and_raise()
         finally:
             self._active_confirm_dialog = None
+            self._resolve_dialog_request(request_id, accepted, failed=task_failed)
+            for duplicate_id in self._duplicate_confirm_request_ids:
+                self._resolve_dialog_request(duplicate_id, accepted, failed=task_failed)
+            self._duplicate_confirm_request_ids.clear()
             if self._pending_download_requests:
                 next_req = self._pending_download_requests.pop(0)
                 QTimer.singleShot(50, lambda: self.show_confirm_download_dialog(next_req))
@@ -930,19 +971,19 @@ class MainWindow(QMainWindow):
         self._refresh_table_data()
         self._reload_table_full()
 
-    def _open_extension_dir(self) -> None:
-        ext_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "extension"))
-        if not os.path.exists(ext_dir):
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            ext_dir = os.path.join(base_dir, "extension")
-        if os.path.exists(ext_dir):
-            open_folder(ext_dir)
-        else:
-            QMessageBox.information(
-                self,
-                "Extension",
-                f"Thư mục Tiện ích trình duyệt (Extension):\n{ext_dir}\n\nHãy vào chrome://extensions và chọn 'Load unpacked'."
-            )
+    def show_extension_dialog(self) -> None:
+        dialog = ExtensionInstallDialog(self)
+        dialog.exec()
+
+    def show_extension_guide_on_startup(self) -> None:
+        """Welcome modal with the extension install guide, shown once per launch."""
+        if not self.config.show_extension_guide:
+            return
+        dialog = ExtensionInstallDialog(self, onboarding=True)
+        dialog.exec()
+        if dialog.dont_show_again:
+            self.config.show_extension_guide = False
+            self.config_manager.save()
 
     def _show_about(self) -> None:
         QMessageBox.about(

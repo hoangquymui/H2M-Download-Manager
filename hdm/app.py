@@ -11,7 +11,7 @@ import sys
 import threading
 from typing import Optional
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
@@ -92,6 +92,11 @@ class AsyncEngineThread(QThread):
         # Graceful shutdown of integration server
         if self.server:
             await self.server.stop()
+
+    def notify_dialog_result(self, request_id: str, accepted: Optional[bool]) -> None:
+        """Report the user's dialog decision back to the waiting HTTP request."""
+        if self.server and request_id:
+            self.server.resolve_dialog(request_id, accepted)
 
     def update_server_config(self, port: int, enabled: bool) -> None:
         """Restart or reconfigure the HTTP integration server with new port/enabled state live."""
@@ -226,6 +231,9 @@ def main() -> None:
         main_window.show()
         if url_arg:
             main_window.bridge.download_requested_signal.emit({"url": url_arg, "is_captured": False})
+        elif config_mgr.config.show_extension_guide:
+            # Delay so the main window and engine are fully painted first.
+            QTimer.singleShot(600, main_window.show_extension_guide_on_startup)
     else:
         logger.info("HDM started automatically on Windows boot (minimized to system tray).")
     sys.exit(app.exec())

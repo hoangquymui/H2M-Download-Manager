@@ -35,6 +35,7 @@ class Config:
     language: str = "vi"                # "vi" or "en"
     start_with_windows: bool = False    # Auto-start with Windows on boot
     show_download_dialog: bool = True   # Show IDM-style confirmation modal on link capture
+    show_extension_guide: bool = True   # Show the extension install guide on startup
     speed_limit_kbps: int = 0           # 0 = unlimited
     category_extensions: Dict[str, str] = field(default_factory=dict)
     category_folders: Dict[str, str] = field(default_factory=dict)
