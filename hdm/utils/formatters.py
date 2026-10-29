@@ -115,29 +115,52 @@ def get_unique_filename(save_dir: str, filename: str) -> str:
         counter += 1
 
 
-def extract_filename_from_url(url: str, content_disposition: Optional[str] = None) -> str:
-    """Extract and decode appropriate filename from Content-Disposition header or URL."""
-    # 1. Try parsing Content-Disposition header if available
-    if content_disposition:
-        # Match RFC 5987 / RFC 6266 utf-8''filename.ext
-        match_utf8 = re.search(r"filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)", content_disposition, re.IGNORECASE)
-        if match_utf8:
-            try:
-                candidate = urllib.parse.unquote(match_utf8.group(1).strip().strip('"\''))
-                if candidate:
-                    return clean_filename(candidate)
-            except Exception:
-                pass
-
-        # Match standard filename="example.zip" or filename=example.zip
-        match_std = re.search(r'filename\s*=\s*("([^"]+)"|([^;\s]+))', content_disposition, re.IGNORECASE)
-        if match_std:
-            candidate = match_std.group(2) or match_std.group(3)
+def _disposition_filename(content_disposition: str) -> str:
+    """Extract the filename value from a Content-Disposition header string."""
+    # RFC 5987 / RFC 6266: filename*=UTF-8''file.ext
+    match_utf8 = re.search(
+        r"filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)", content_disposition, re.IGNORECASE
+    )
+    if match_utf8:
+        try:
+            candidate = urllib.parse.unquote(match_utf8.group(1).strip().strip('"\''))
             if candidate:
-                candidate = urllib.parse.unquote(candidate.strip().strip('"\''))
                 return clean_filename(candidate)
+        except Exception:
+            pass
 
-    # 2. Extract from URL pathname
+    match_std = re.search(
+        r'filename\s*=\s*("([^"]+)"|([^;\s]+))', content_disposition, re.IGNORECASE
+    )
+    if match_std:
+        candidate = match_std.group(2) or match_std.group(3)
+        if candidate:
+            candidate = urllib.parse.unquote(candidate.strip().strip('"\''))
+            return clean_filename(candidate)
+    return ""
+
+
+def _has_extension(filename: str) -> bool:
+    ext = os.path.splitext(filename or "")[1].lstrip(".")
+    # A real extension is alphanumeric and contains a letter ("7z", "mp4"),
+    # which rules out version tails such as ".1" or ".2407".
+    return 1 < len(ext) <= 12 and ext.isalnum() and any(ch.isalpha() for ch in ext)
+
+
+def extract_filename_from_url(url: str, content_disposition: Optional[str] = None) -> str:
+    """Extract and decode appropriate filename from Content-Disposition header or URL.
+
+    Signed CDN URLs often carry an opaque UUID as the Content-Disposition
+    filename while the real name lives in the URL (path or the
+    ``response-content-disposition`` query of S3/Azure/GCS links). Prefer
+    whichever candidate actually has a file extension.
+    """
+    disposition_name = _disposition_filename(content_disposition) if content_disposition else ""
+    if disposition_name and _has_extension(disposition_name):
+        return disposition_name
+
+    url_name = ""
+    query_disposition_name = ""
     try:
         parsed = urllib.parse.urlparse(url)
         path = parsed.path
@@ -147,8 +170,28 @@ def extract_filename_from_url(url: str, content_disposition: Optional[str] = Non
                 decoded = urllib.parse.unquote(basename)
                 cleaned = clean_filename(decoded)
                 if cleaned and cleaned != "download":
-                    return cleaned
+                    url_name = cleaned
+
+        # Signed object-storage links put the real name in a query parameter.
+        query = urllib.parse.parse_qs(parsed.query)
+        for key in ("response-content-disposition", "content-disposition"):
+            for value in query.get(key, []):
+                candidate = _disposition_filename(value)
+                if candidate:
+                    query_disposition_name = candidate
+                    break
+            if query_disposition_name:
+                break
+        if not query_disposition_name:
+            for value in query.get("filename", []):
+                if value.strip():
+                    query_disposition_name = clean_filename(urllib.parse.unquote(value.strip()))
+                    break
     except Exception:
         pass
 
-    return "download"
+    for candidate in (url_name, query_disposition_name):
+        if candidate and _has_extension(candidate):
+            return candidate
+
+    return disposition_name or url_name or query_disposition_name or "download"

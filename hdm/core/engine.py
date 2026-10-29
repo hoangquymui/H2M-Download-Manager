@@ -5,15 +5,21 @@ High-performance asynchronous multi-connection downloading with Dynamic Segmenta
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
+import ipaddress
 import json
 import logging
 import os
+import pathlib
 import random
+import re
 import shutil
 import sys
+import tempfile
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 
@@ -30,6 +36,7 @@ MAX_CHUNK_RETRIES = 8          # Retries with exponential backoff before failing
 
 STREAMING_DOMAINS = (
     "youtube.com",
+    "youtube-nocookie.com",
     "youtu.be",
     "facebook.com",
     "fb.watch",
@@ -57,13 +64,188 @@ STREAMING_DOMAINS = (
 
 
 def is_streaming_url(url: str) -> bool:
-    """Check if the URL belongs to a streaming service or manifest supported by yt-dlp."""
+    """Check if the URL belongs to a streaming service or manifests supported by yt-dlp.
+
+    Hosts are matched by exact domain / subdomain, never by raw substring, so
+    domains like 'box.com' are not treated as 'x.com'.
+    """
     if not url:
         return False
-    u = url.lower().split("?")[0]
-    if u.endswith(".m3u8") or u.endswith(".mpd") or ".m3u8" in u or ".mpd" in u:
+    value = url.strip().lower()
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+
+    if parsed.scheme == "file":
+        path = parsed.path or ""
+        return path.endswith(".m3u8") or path.endswith(".mpd")
+
+    if not parsed.netloc:
+        # Allow bare host input like "vimeo.com/123"
+        try:
+            parsed = urlparse(f"https://{value.lstrip('/')}")
+        except ValueError:
+            return False
+
+    host = (parsed.hostname or "").strip(".")
+    path = parsed.path or ""
+    if ".m3u8" in path or ".mpd" in path:
         return True
-    return any(d in url.lower() for d in STREAMING_DOMAINS)
+    if ".m3u8" in (parsed.query or "") or ".mpd" in (parsed.query or ""):
+        return True
+
+    for domain in STREAMING_DOMAINS:
+        if host == domain or host.endswith("." + domain):
+            return True
+    return False
+
+
+HEIGHT_QUALITIES = ("1080", "720", "480", "360", "240", "144")
+
+# YouTube-family hosts handle authentication and URL signing themselves. Raw
+# browser cookies/headers confuse them (bot checks, 403 on googlevideo), so
+# yt-dlp is left to manage its own session there.
+NO_BROWSER_HEADER_DOMAINS = (
+    "youtube.com",
+    "youtube-nocookie.com",
+    "youtu.be",
+    "googlevideo.com",
+    "googleusercontent.com",
+)
+
+
+def _needs_browser_headers(url: str) -> bool:
+    """False for platforms where raw browser headers break yt-dlp."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return True
+    return not any(host == d or host.endswith("." + d) for d in NO_BROWSER_HEADER_DOMAINS)
+
+
+def _is_placeholder_filename(name: str) -> bool:
+    """True when a filename carries no real name (empty, generic, no extension).
+
+    Signed CDN links usually suggest an opaque UUID, so those names must yield
+    to the Content-Disposition / URL name. A name the user chose always wins.
+    """
+    base = os.path.basename((name or "").strip())
+    if not base:
+        return True
+    if base.lower() in ("watch", "watch.html", "index.html", "download", "videoplayback"):
+        return True
+    return not os.path.splitext(base)[1]
+
+
+def _cookie_pairs(cookie_header: str) -> List[Tuple[str, str]]:
+    """Split a `Cookie: a=1; b=2` header into (name, value) pairs."""
+    pairs: List[Tuple[str, str]] = []
+    for part in (cookie_header or "").split(";"):
+        name, sep, value = part.strip().partition("=")
+        name = name.strip()
+        value = value.strip()
+        if not sep or not name or any(c in name + value for c in "\t\r\n"):
+            continue
+        pairs.append((name, value))
+    return pairs
+
+
+def _media_hosts(url: str, manifest: str) -> List[str]:
+    """Hosts that will receive the captured cookies: the task URL plus every
+    absolute URL in the playlist (variants, segments, keys)."""
+    hosts: List[str] = []
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host:
+        hosts.append(host)
+    for match in re.finditer(r"https?://[^\s\"'`<>\\]+", manifest or ""):
+        try:
+            host = (urlparse(match.group(0)).hostname or "").lower()
+        except ValueError:
+            continue
+        if host:
+            hosts.append(host)
+    return list(dict.fromkeys(hosts))
+
+
+def _write_cookiefile(path: str, cookie_header: str, url: str, manifest: str) -> bool:
+    """Write a Netscape cookie file for the stream hosts.
+
+    yt-dlp drops a plain `Cookie:` header when the playlist is fed from a local
+    file:// URL, because it can no longer infer a domain to scope it to. A
+    cookie jar scoped to the media hosts keeps protected HLS working.
+    """
+    pairs = _cookie_pairs(cookie_header)
+    hosts = _media_hosts(url, manifest)
+    if not pairs or not hosts:
+        return False
+    expiry = int(time.time()) + 86400 * 365
+    lines = ["# Netscape HTTP Cookie File", ""]
+    for host in hosts:
+        bare = host.lstrip(".")
+        try:
+            ipaddress.ip_address(bare)
+            domain, include_subdomains = bare, "FALSE"
+        except ValueError:
+            # Netscape requires a leading dot whenever subdomains are included;
+            # a leading dot never matches an IP literal, hence the branch above.
+            domain, include_subdomains = f".{bare}", "TRUE"
+        for name, value in pairs:
+            lines.append(f"{domain}\t{include_subdomains}\t/\tFALSE\t{expiry}\t{name}\t{value}")
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def _js_runtimes() -> Dict[str, Dict[str, Any]]:
+    """Enable installed JS runtimes for yt-dlp's YouTube challenge solving.
+
+    Recent yt-dlp only enables deno by default; without a runtime (plus the
+    yt-dlp-ejs solver) YouTube silently loses most formats.
+    """
+    runtimes: Dict[str, Dict[str, Any]] = {}
+    for name in ("node", "deno", "bun"):
+        if shutil.which(name):
+            runtimes[name] = {}
+    return runtimes
+
+
+def _stream_format_spec(quality: str, is_audio_only: bool, manifest: str = "") -> str:
+    """Pick the yt-dlp format selector for a stream or captured playlist.
+
+    Height filters only apply when the source actually exposes several
+    renditions (master playlist or a stream URL); a captured media playlist is
+    already a single rendition. MP4/M4A is preferred so YouTube and similar
+    sites produce a universally playable file.
+    """
+    if is_audio_only:
+        return "bestaudio/best"
+
+    height = quality if quality in HEIGHT_QUALITIES else ""
+    is_master = "#EXT-X-STREAM-INF" in manifest
+
+    if manifest and not is_master:
+        return "best"
+    if is_master:
+        # Masters may expose muxed renditions or separate video/audio variants.
+        if height:
+            return (
+                f"b[height<={height}]/bv*[height<={height}]+ba/"
+                f"b[height<={height}]/b"
+            )
+        return "b/bv*+ba/b"
+    if height:
+        return (
+            f"bv*[height<={height}][vcodec^=avc1]+ba[ext=m4a]/"
+            f"bv*[height<={height}]+ba/b[height<={height}]/b"
+        )
+    return "bv*[vcodec^=avc1]+ba[ext=m4a]/bv*+ba/b"
 
 
 class AsyncBatchDiskWriter:
@@ -89,8 +271,11 @@ class AsyncBatchDiskWriter:
 
     async def put(self, offset: int, data: bytes) -> None:
         """Enqueue a block of data for asynchronous disk write."""
-        if self._closed or self._write_error:
+        if self._closed:
             return
+        if self._write_error:
+            # Never silently drop payload: a caller must be able to abort the task.
+            raise IOError(f"Lỗi ghi đĩa: {self._write_error}")
         await self.queue.put((offset, data))
 
     async def truncate(self, size: int = 0) -> None:
@@ -198,22 +383,35 @@ class DownloadEngine:
         self.min_steal_size = max(131072, min_steal_size or MIN_STEAL_SIZE)
         self.speed_limit_kbps = max(0, speed_limit_kbps or 0)
 
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pause_requested = asyncio.Event()
         self._cancel_requested = asyncio.Event()
         self._chunks_lock = asyncio.Lock()
 
         self._disk_writer: Optional[AsyncBatchDiskWriter] = None
+        self._disk_writer_error: Optional[str] = None
         self._fail_counts: Dict[int, int] = {}
         self._last_speed_check_time = time.time()
         self._last_downloaded_bytes = 0
 
+    def _signal_from_any_thread(self, event: asyncio.Event) -> None:
+        """Set an asyncio.Event safely even when called from the Qt GUI thread."""
+        loop = self._loop
+        if loop and loop.is_running():
+            try:
+                loop.call_soon_threadsafe(event.set)
+                return
+            except RuntimeError:
+                pass
+        event.set()
+
     def pause(self) -> None:
         """Signal the engine to pause downloading."""
-        self._pause_requested.set()
+        self._signal_from_any_thread(self._pause_requested)
 
     def cancel(self) -> None:
         """Signal the engine to cancel downloading."""
-        self._cancel_requested.set()
+        self._signal_from_any_thread(self._cancel_requested)
 
     def update_url(self, new_url: str) -> None:
         """Update download URL (useful when temporary CDN links expire with HTTP 403/410)."""
@@ -328,10 +526,15 @@ class DownloadEngine:
         if content_type:
             self.task.content_type = content_type
 
-        # Extract filename if currently default
+        # Only replace a placeholder name: a name typed in the dialog (or a real
+        # name from the URL) must survive the server's headers.
         cd = headers.get("content-disposition", "")
         extracted_name = extract_filename_from_url(str(response.url), cd)
-        if extracted_name and extracted_name != "download":
+        if (
+            extracted_name
+            and extracted_name != "download"
+            and _is_placeholder_filename(self.task.filename)
+        ):
             self.task.filename = extracted_name
 
     def _save_metadata(self) -> None:
@@ -357,13 +560,73 @@ class DownloadEngine:
         try:
             with open(self.task.meta_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("total_bytes") == self.task.total_bytes and data.get("chunks"):
-                self.task.chunks = [Chunk.from_dict(c) for c in data["chunks"]]
-                self.task.update_downloaded_from_chunks()
-                return True
+            if data.get("total_bytes") != self.task.total_bytes or not data.get("chunks"):
+                return False
+
+            # The remote file must still be the same object; otherwise byte offsets
+            # from the old download are meaningless and the resume is corrupt.
+            saved_etag = str(data.get("etag", "") or "")
+            if saved_etag and self.task.etag and saved_etag != self.task.etag:
+                logger.info(f"Task {self.task.id}: ETag changed, restarting download")
+                return False
+
+            self.task.chunks = [Chunk.from_dict(c) for c in data["chunks"]]
+            # A pause stores chunks mid-flight as "downloading"; nothing owns
+            # them in the new run, so they would never be claimed again.
+            for chunk in self.task.chunks:
+                if chunk.end_byte >= 0 and chunk.remaining_bytes <= 0:
+                    chunk.status = "completed"
+                elif chunk.status in ("downloading", "failed"):
+                    chunk.status = "pending"
+                chunk.speed = 0.0
+            self.task.update_downloaded_from_chunks()
+            return True
         except Exception as e:
             logger.warning(f"Failed to load metadata: {e}")
         return False
+
+    async def _inline_hls_keys(self, manifest: str, workdir: str) -> str:
+        """Point AES-128 key URIs at local copies fetched with the session.
+
+        yt-dlp requests EXT-X-KEY URIs without the captured Referer/Cookie, so
+        protected keys answer 403 even when segments download fine. Keys that
+        cannot be fetched are left untouched for yt-dlp to retry.
+        """
+        headers = dict(self.task.headers or {})
+        key_files: Dict[str, Optional[str]] = {}
+        lines: List[str] = []
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=30.0),
+            follow_redirects=True,
+            headers=headers,
+        ) as client:
+            for line in manifest.splitlines():
+                if not line.startswith("#EXT-X-KEY") or "METHOD=AES-128" not in line.upper():
+                    lines.append(line)
+                    continue
+                match = re.search(r'URI="([^"]+)"', line) or re.search(r"URI=([^,\s]+)", line)
+                uri = match.group(1) if match else ""
+                if not uri.lower().startswith(("http://", "https://")):
+                    lines.append(line)
+                    continue
+                if uri not in key_files:
+                    local_uri: Optional[str] = None
+                    try:
+                        response = await client.get(uri)
+                        response.raise_for_status()
+                        if len(response.content) != 16:
+                            raise ValueError(f"unexpected key length {len(response.content)}")
+                        key_path = os.path.join(workdir, f"key_{len(key_files)}.bin")
+                        with open(key_path, "wb") as f:
+                            f.write(response.content)
+                        local_uri = pathlib.Path(key_path).absolute().as_uri()
+                    except Exception as e:
+                        logger.debug(f"HLS key prefetch skipped for {uri}: {e}")
+                    key_files[uri] = local_uri
+                if key_files[uri]:
+                    line = line.replace(match.group(0), f'URI="{key_files[uri]}"')
+                lines.append(line)
+        return "\n".join(lines)
 
     async def _download_streaming_video(self) -> bool:
         """Download streaming media from YouTube, Facebook, TikTok, etc. using yt_dlp."""
@@ -389,7 +652,14 @@ class DownloadEngine:
                 for i in range(num_conns)
             ]
 
-        os.makedirs(self.task.save_dir, exist_ok=True)
+        try:
+            os.makedirs(self.task.save_dir, exist_ok=True)
+        except Exception as e:
+            self.task.status = TaskStatus.ERROR
+            self.task.error_message = f"Không thể tạo thư mục lưu: {e}"
+            if self.on_progress:
+                self.on_progress(self.task)
+            return False
         base_name = os.path.splitext(self.task.filename)[0] if self.task.filename else "video"
         base_name = clean_filename(base_name)
         out_pattern = os.path.join(self.task.save_dir, f"{base_name}.%(ext)s")
@@ -466,17 +736,24 @@ class DownloadEngine:
             elif status == "finished":
                 self.task.error_message = ""
 
-        # Locate ffmpeg if available across standard system and app locations
+        # Locate ffmpeg across PATH, the packaged dependency, and common installs
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
         ffmpeg_paths = [
             shutil.which("ffmpeg"),
-            r"C:\Users\mui\AppData\Local\Microsoft\WinGet\Links\ffmpeg.EXE",
-            r"D:\ProgramFiles\TaiNhanhDM\bin\ffmpeg.exe",
+            os.path.join(local_appdata, "Microsoft", "WinGet", "Links", "ffmpeg.exe") if local_appdata else "",
             r"C:\Program Files\File Converter\ffmpeg.exe",
             os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe"),
             os.path.join(os.path.dirname(sys.executable), "bin", "ffmpeg.exe"),
             r"C:\ffmpeg\bin\ffmpeg.exe",
         ]
         ffmpeg_bin = next((p for p in ffmpeg_paths if p and os.path.exists(p)), None)
+        if not ffmpeg_bin:
+            try:
+                import imageio_ffmpeg
+
+                ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception:
+                ffmpeg_bin = None
 
         quality = getattr(self.task, "quality", "") or ""
         is_audio_only = bool(
@@ -484,12 +761,11 @@ class DownloadEngine:
             or quality in ("128", "192", "320")
         )
 
-        if is_audio_only:
-            format_spec = "bestaudio/best"
-        elif quality in ("1080", "720", "480", "360", "240", "144"):
-            format_spec = f"bestvideo[height<={quality}]+bestaudio/bestvideo+bestaudio/best[height<={quality}]/best"
+        if self.task.manifest:
+            # The captured playlist already represents one specific rendition.
+            format_spec = _stream_format_spec(quality, is_audio_only, self.task.manifest)
         else:
-            format_spec = "bestvideo+bestaudio/bestvideo/bestaudio/best"
+            format_spec = _stream_format_spec(quality, is_audio_only)
 
         ydl_opts = {
             "format": format_spec,
@@ -509,6 +785,10 @@ class DownloadEngine:
         if self.speed_limit_kbps > 0:
             ydl_opts["ratelimit"] = self.speed_limit_kbps * 1024
 
+        runtimes = _js_runtimes()
+        if runtimes:
+            ydl_opts["js_runtimes"] = runtimes
+
         if ffmpeg_bin:
             ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_bin)
             if is_audio_only:
@@ -517,20 +797,66 @@ class DownloadEngine:
                     "preferredcodec": "mp3",
                     "preferredquality": quality if quality in ("128", "192", "320") else "128",
                 }]
-            else:
-                ydl_opts["merge_output_format"] = "mp4"
 
-        if self.task.headers:
+        cookie_dirs: List[str] = []
+        if self.task.headers and _needs_browser_headers(self.task.url):
+            # Cookies/Referer are required by many protected HLS CDNs; dropping
+            # them here made the browser-captured streams fail with HTTP 403.
             headers = dict(self.task.headers)
-            headers.pop("Cookie", None)
-            headers.pop("cookie", None)
+            cookie_header = headers.pop("Cookie", "") or headers.pop("cookie", "")
+            if cookie_header:
+                cookie_dir = tempfile.mkdtemp(prefix="hdm_cookies_")
+                cookie_dirs.append(cookie_dir)
+                cookie_path = os.path.join(cookie_dir, "cookies.txt")
+                if _write_cookiefile(cookie_path, cookie_header, self.task.url, self.task.manifest):
+                    ydl_opts["cookiefile"] = cookie_path
             if headers:
                 ydl_opts["http_headers"] = headers
 
+        manifest_dir = ""
+        manifest_path = ""
+        if self.task.manifest:
+            # The page generated the playlist in JS (blob: URL), so it cannot be
+            # re-fetched. Feed the captured text to yt-dlp as a local playlist.
+            # Keep it outside save_dir: yt-dlp leaks read handles on Windows and
+            # the file often survives deletion until the process exits.
+            manifest_dir = tempfile.mkdtemp(prefix="hdm_m3u8_")
+            manifest_path = os.path.join(manifest_dir, f"manifest_{self.task.id}.m3u8")
+            ydl_opts["enable_file_urls"] = True
+
+        def cleanup_manifest() -> None:
+            for cookie_dir in cookie_dirs:
+                shutil.rmtree(cookie_dir, ignore_errors=True)
+            if not manifest_dir:
+                return
+            for _ in range(3):
+                # yt-dlp's urllib handler leaks the file response object; a GC
+                # pass releases the Windows handle so the file can be removed.
+                gc.collect()
+                shutil.rmtree(manifest_dir, ignore_errors=True)
+                if not os.path.exists(manifest_dir):
+                    return
+                time.sleep(0.2)
+
         try:
+            source = self.task.url
+            if manifest_path:
+                try:
+                    manifest_text = self.task.manifest.strip()
+                    manifest_text = await self._inline_hls_keys(manifest_text, manifest_dir)
+                    with open(manifest_path, "w", encoding="utf-8", newline="\n") as f:
+                        f.write(manifest_text + "\n")
+                    source = pathlib.Path(manifest_path).absolute().as_uri()
+                except Exception as e:
+                    self.task.status = TaskStatus.ERROR
+                    self.task.error_message = f"Không thể lưu manifest HLS: {e}"
+                    if self.on_progress:
+                        self.on_progress(self.task)
+                    return False
+
             def do_dl():
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    return ydl.extract_info(self.task.url, download=True)
+                    return ydl.extract_info(source, download=True)
 
             info = await asyncio.to_thread(do_dl)
 
@@ -576,19 +902,28 @@ class DownloadEngine:
             elif self._pause_requested.is_set():
                 self.task.status = TaskStatus.PAUSED
             else:
+                message = str(e)
+                lowered = message.lower()
+                if not _js_runtimes() and (
+                    "signature" in lowered or "javascript runtime" in lowered
+                ):
+                    message += " — HDM: cài Node.js (hoặc Deno) để giải mã luồng YouTube."
                 self.task.status = TaskStatus.ERROR
-                self.task.error_message = f"Lỗi tải video: {e}"
+                self.task.error_message = f"Lỗi tải video: {message}"
             if self.on_progress:
                 self.on_progress(self.task)
             return False
+        finally:
+            cleanup_manifest()
 
     async def run(self) -> bool:
         """Execute the download process."""
+        self._loop = asyncio.get_running_loop()
         self._pause_requested.clear()
         self._cancel_requested.clear()
 
-        # Route streaming video platforms (YouTube, Facebook, etc.) to yt_dlp
-        if is_streaming_url(self.task.url):
+        # Captured in-page playlists and streaming platforms go through yt-dlp
+        if self.task.manifest or is_streaming_url(self.task.url):
             return await self._download_streaming_video()
 
         timeout = httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=45.0)
@@ -625,11 +960,24 @@ class DownloadEngine:
                         self.on_progress(self.task)
                     return False
 
-            os.makedirs(self.task.save_dir, exist_ok=True)
+            try:
+                os.makedirs(self.task.save_dir, exist_ok=True)
+            except Exception as e:
+                self.task.status = TaskStatus.ERROR
+                self.task.error_message = f"Không thể tạo thư mục lưu: {e}"
+                if self.on_progress:
+                    self.on_progress(self.task)
+                return False
 
             # 2. Initialize chunks or load from saved metadata
             if self.task.supports_range and self.task.total_bytes > 0:
                 has_meta = self._load_metadata()
+                if has_meta and not os.path.exists(self.task.temp_path):
+                    # Meta survived but the partial file was removed: byte offsets
+                    # would produce a corrupt sparse file, so restart from scratch.
+                    has_meta = False
+                    self.task.chunks = []
+                    self.task.downloaded_bytes = 0
                 if not has_meta or not self.task.chunks:
                     # Initial partition
                     num_workers = min(
@@ -701,9 +1049,8 @@ class DownloadEngine:
 
                 if self._disk_writer:
                     await self._disk_writer.close()
-                    if self._disk_writer.error and self.task.status != TaskStatus.ERROR:
-                        self.task.status = TaskStatus.ERROR
-                        self.task.error_message = f"Lỗi ghi đĩa: {self._disk_writer.error}"
+                    if self._disk_writer.error:
+                        self._disk_writer_error = self._disk_writer.error
                     self._disk_writer = None
 
             # 6. Check completion status
@@ -726,6 +1073,15 @@ class DownloadEngine:
                 self.task.status = TaskStatus.PAUSED
                 self.task.speed = 0.0
                 self._save_metadata()
+                if self.on_progress:
+                    self.on_progress(self.task)
+                return False
+
+            # A failed disk write corrupts the partial file: never report COMPLETED.
+            if self._disk_writer_error:
+                self.task.status = TaskStatus.ERROR
+                self.task.error_message = f"Lỗi ghi đĩa: {self._disk_writer_error}"
+                self.task.speed = 0.0
                 if self.on_progress:
                     self.on_progress(self.task)
                 return False
@@ -796,7 +1152,11 @@ class DownloadEngine:
     async def _worker(self, client: httpx.AsyncClient, worker_id: int) -> None:
         """Worker coroutine that claims pending chunks or steals work from bottleneck chunks."""
         idle_retries = 0
-        while not (self._pause_requested.is_set() or self._cancel_requested.is_set()):
+        while not (
+            self._pause_requested.is_set()
+            or self._cancel_requested.is_set()
+            or self.task.status == TaskStatus.ERROR
+        ):
             # 1. Claim a pending chunk
             chunk = await self._get_pending_chunk()
 
@@ -971,7 +1331,12 @@ class DownloadEngine:
 
         except Exception as e:
             logger.debug(f"Chunk {chunk.chunk_id} download error: {e}")
-            if not self._pause_requested.is_set():
+            if self._disk_writer and self._disk_writer.error:
+                # Disk failure cannot be fixed by retrying the chunk.
+                chunk.status = "failed"
+                self.task.status = TaskStatus.ERROR
+                self.task.error_message = f"Lỗi ghi đĩa: {self._disk_writer.error}"
+            elif not self._pause_requested.is_set():
                 self._register_failure(chunk, f"{type(e).__name__}: {e}")
         finally:
             if self.on_chunk_update:

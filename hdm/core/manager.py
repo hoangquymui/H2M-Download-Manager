@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -42,6 +43,7 @@ class DownloadQueueManager:
         self._queue_running = True
         self._loop_task: Optional[asyncio.Task[None]] = None
         self._lock = asyncio.Lock()
+        self._save_lock = threading.Lock()
 
         self.load_tasks()
 
@@ -55,15 +57,17 @@ class DownloadQueueManager:
         while self._queue_running:
             await asyncio.sleep(0.5)
             async with self._lock:
+                # Snapshot: the GUI thread may add/remove tasks concurrently.
+                tasks = list(self.tasks.values())
                 running_count = sum(
-                    1 for t in self.tasks.values()
+                    1 for t in tasks
                     if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.PROCESSING)
                 )
                 slots_available = self.config.max_concurrent_tasks - running_count
 
                 if slots_available > 0:
                     queued_tasks = [
-                        t for t in self.tasks.values()
+                        t for t in tasks
                         if t.status == TaskStatus.QUEUED
                     ]
                     for task in queued_tasks[:slots_available]:
@@ -121,6 +125,7 @@ class DownloadQueueManager:
         auto_start: Optional[bool] = None,
         quality: Optional[str] = None,
         category: Optional[str] = None,
+        manifest: Optional[str] = None,
     ) -> DownloadTask:
         """Create and queue a new download task."""
         if not filename:
@@ -136,6 +141,8 @@ class DownloadQueueManager:
                 final_category = get_category_for_filename(filename)
         elif quality in ("128", "192", "320"):
             final_category = FileCategory.AUDIO
+        elif manifest:
+            final_category = FileCategory.VIDEO
         elif quality in ("1080", "720", "480", "360"):
             final_category = FileCategory.VIDEO
         elif is_streaming_url(url):
@@ -164,6 +171,7 @@ class DownloadQueueManager:
             num_connections=connections,
             category=final_category.value,
             quality=quality or "",
+            manifest=manifest or "",
             status=TaskStatus.QUEUED if should_start else TaskStatus.PAUSED,
         )
 
@@ -243,13 +251,11 @@ class DownloadQueueManager:
             return False
 
         # Stop active download first
-        if task.id in self.active_engines:
-            self.active_engines[task.id].cancel()
+        engine = self.active_engines.get(task.id)
+        if engine:
+            engine.cancel()
 
         if delete_file:
-            import time
-            # Allow brief moment for background I/O handles to release
-            time.sleep(0.15)
             paths_to_delete = [
                 task.full_path,
                 task.temp_path,
@@ -257,18 +263,13 @@ class DownloadQueueManager:
                 f"{task.full_path}.crdownload",
                 f"{task.full_path}.part",
             ]
-            for path in paths_to_delete:
-                for attempt in range(5):
-                    if os.path.exists(path):
-                        try:
-                            os.remove(path)
-                            logger.info(f"Deleted file from disk: {path}")
-                            break
-                        except Exception as e:
-                            logger.warning(f"Failed attempt {attempt + 1} deleting {path}: {e}")
-                            time.sleep(0.1)
-                    else:
-                        break
+            # Deletion retries run off the GUI thread so the window never freezes
+            # while the engine releases its file handle.
+            threading.Thread(
+                target=self._delete_files_with_retry,
+                args=(paths_to_delete,),
+                daemon=True,
+            ).start()
 
         del self.tasks[task_id]
         self.save_tasks()
@@ -277,26 +278,45 @@ class DownloadQueueManager:
             self.on_task_removed(task_id)
         return True
 
+    @staticmethod
+    def _delete_files_with_retry(paths: List[str]) -> None:
+        time.sleep(0.15)  # Let the engine release its file handle
+        for path in paths:
+            for attempt in range(5):
+                if not os.path.exists(path):
+                    break
+                try:
+                    os.remove(path)
+                    logger.info(f"Deleted file from disk: {path}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed attempt {attempt + 1} deleting {path}: {e}")
+                    time.sleep(0.1)
+
     def get_total_speed(self) -> float:
         """Calculate aggregate download speed across all active tasks."""
         return sum(
-            t.speed for t in self.tasks.values()
+            t.speed for t in list(self.tasks.values())
             if t.status == TaskStatus.DOWNLOADING
         )
 
     def get_active_count(self) -> int:
         """Return number of actively running tasks."""
         return sum(
-            1 for t in self.tasks.values()
+            1 for t in list(self.tasks.values())
             if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.PROCESSING)
         )
 
     def save_tasks(self) -> None:
-        """Persist task list to JSON storage."""
+        """Persist task list atomically (safe against concurrent/crashed writes)."""
         try:
-            data = [t.to_dict() for t in self.tasks.values()]
-            with open(self.storage_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            data = [t.to_dict() for t in list(self.tasks.values())]
+            payload = json.dumps(data, indent=2, ensure_ascii=False)
+            tmp_file = f"{self.storage_file}.tmp"
+            with self._save_lock:
+                with open(tmp_file, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_file, self.storage_file)
         except Exception as e:
             logger.warning(f"Failed to save tasks: {e}")
 

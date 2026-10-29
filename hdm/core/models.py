@@ -93,6 +93,7 @@ class DownloadTask:
     num_connections: int = 8
     category: str = FileCategory.OTHERS.value
     quality: str = ""
+    manifest: str = ""  # In-page captured HLS/DASH playlist content (blob players)
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     chunks: List[Chunk] = field(default_factory=list)
@@ -152,6 +153,7 @@ class DownloadTask:
             "num_connections": self.num_connections,
             "category": self.category,
             "quality": self.quality,
+            "manifest": self.manifest,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
             "chunks": [c.to_dict() for c in self.chunks],
@@ -188,6 +190,7 @@ class DownloadTask:
             num_connections=int(data.get("num_connections", 8)),
             category=data.get("category", FileCategory.OTHERS.value),
             quality=data.get("quality", ""),
+            manifest=data.get("manifest", ""),
             created_at=float(data.get("created_at", time.time())),
             completed_at=data.get("completed_at"),
             chunks=chunks,
