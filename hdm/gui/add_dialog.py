@@ -7,7 +7,7 @@ and three clear actions: [Start Download], [Download Later], and [Cancel].
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import httpx
 from PySide6.QtCore import Qt, QThread, Signal
@@ -95,13 +95,13 @@ class ProbeWorker(QThread):
             headers.update(self.custom_headers)
             headers.setdefault("Accept-Encoding", "identity")
             with httpx.Client(follow_redirects=True, timeout=12.0, headers={"Accept-Encoding": "identity"}) as client:
-                resp = client.head(self.url, headers=headers)
-                if resp.status_code >= 400:
-                    self.error_signal.emit(f"HTTP {resp.status_code}")
-                    return
-
-                if resp.status_code not in (200, 206):
-                    # Fallback to GET with Range 0-0
+                try:
+                    resp = client.head(self.url, headers=headers)
+                except Exception:
+                    resp = None
+                # Many servers reject HEAD (405/403 or reset) while GET works, so
+                # a failed HEAD must fall back to a one-byte ranged GET.
+                if resp is None or resp.status_code not in (200, 206):
                     range_headers = dict(headers)
                     range_headers["Range"] = "bytes=0-0"
                     resp = client.get(self.url, headers=range_headers)
@@ -110,12 +110,19 @@ class ProbeWorker(QThread):
                         return
 
                 total_bytes = -1
-                cl = resp.headers.get("x-identity-content-length") or resp.headers.get("content-length")
-                if cl:
-                    try:
-                        total_bytes = int(cl)
-                    except ValueError:
-                        pass
+                if resp.status_code == 206:
+                    content_range = resp.headers.get("content-range", "")
+                    if "/" in content_range:
+                        total_str = content_range.rsplit("/", 1)[1]
+                        if total_str.isdigit():
+                            total_bytes = int(total_str)
+                if total_bytes <= 0:
+                    cl = resp.headers.get("x-identity-content-length") or resp.headers.get("content-length")
+                    if cl:
+                        try:
+                            total_bytes = int(cl)
+                        except ValueError:
+                            pass
 
                 supports_range = (
                     resp.headers.get("accept-ranges", "").lower() == "bytes" or
@@ -140,6 +147,8 @@ class DownloadConfirmDialog(QDialog):
         custom_headers: Optional[Dict[str, str]] = None,
         is_captured: bool = False,
         initial_quality: str = "",
+        initial_manifest: str = "",
+        initial_qualities: Optional[List[Dict[str, str]]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -149,6 +158,25 @@ class DownloadConfirmDialog(QDialog):
         self.custom_headers = custom_headers or {}
         self.is_captured = is_captured
         self.initial_quality = initial_quality or ""
+        self.initial_manifest = initial_manifest or ""
+        self._default_manifest = self.initial_manifest
+        # Per-quality playlists captured from the player (blob HLS builds), so
+        # picking a quality really downloads that rendition.
+        captured = [
+            q
+            for q in (initial_qualities or [])
+            if isinstance(q, dict) and isinstance(q.get("manifest"), str) and q["manifest"]
+        ][:8]
+        # Without a default playlist, "auto" would fall back to downloading the
+        # page HTML; the highest captured rendition is the sensible default.
+        if not self.initial_manifest and captured:
+            self._default_manifest = captured[0]["manifest"]
+            self.initial_manifest = self._default_manifest
+        # An audio request must keep the bitrate options (128/192/320); captured
+        # renditions are video-only, so replacing the list would silently drop
+        # the selected MP3 quality.
+        self._captured_qualities = [] if initial_quality in ("128", "192", "320") else captured
+        self._selected_quality = ""
 
         # Action selected: 'start_now', 'download_later', or 'cancel'
         self.selected_action = "start_now"
@@ -168,13 +196,23 @@ class DownloadConfirmDialog(QDialog):
 
         self._init_ui()
 
+        if self._captured_qualities:
+            self._populate_captured_qualities()
+
         # Pre-fill data if provided
         if self.initial_quality:
-            idx = self.quality_combo.findData(self.initial_quality)
-            if idx >= 0:
-                self.quality_combo.setCurrentIndex(idx)
+            if self._captured_qualities:
+                # Never exceed the requested resolution: fall back to the closest
+                # captured rendition that is not larger.
+                idx = self._captured_index_for_height(self.initial_quality)
+                if idx is not None:
+                    self.quality_combo.setCurrentIndex(idx + 1)
+            else:
+                idx = self.quality_combo.findData(self.initial_quality)
+                if idx >= 0:
+                    self.quality_combo.setCurrentIndex(idx)
 
-        if is_streaming_url(self.initial_url):
+        if self.initial_manifest or is_streaming_url(self.initial_url):
             if self.initial_quality in ("128", "192", "320"):
                 idx = self.cat_combo.findData(FileCategory.AUDIO.value)
             else:
@@ -189,7 +227,10 @@ class DownloadConfirmDialog(QDialog):
 
         if self.initial_url:
             self.url_input.setText(self.initial_url)
-            self._on_probe_clicked()
+            if self.initial_manifest:
+                self._show_manifest_ready()
+            else:
+                self._on_probe_clicked()
 
     def _init_ui(self) -> None:
         colors = get_palette()
@@ -389,8 +430,70 @@ class DownloadConfirmDialog(QDialog):
             except Exception:
                 pass
 
+    def _captured_index_for_height(self, height: str) -> Optional[int]:
+        """Index of the captured rendition matching a requested height.
+
+        Falls back to the closest smaller rendition, so asking for 360p on a
+        page that captured 1080p/720p/480p never downloads the 1080p playlist.
+        """
+        try:
+            wanted = int(str(height))
+        except (TypeError, ValueError):
+            return None
+        heights = [
+            (int(str(q.get("height") or "")), i)
+            for i, q in enumerate(self._captured_qualities)
+            if str(q.get("height") or "").isdigit()
+        ]
+        if not heights:
+            return None
+        exact = [i for h, i in heights if h == wanted]
+        if exact:
+            return exact[0]
+        smaller = [pair for pair in heights if pair[0] < wanted]
+        if smaller:
+            return max(smaller)[1]
+        return min(heights)[1]
+
+    def _populate_captured_qualities(self) -> None:
+        """Replace the static quality list with the renditions the player exposed."""
+        self.quality_combo.blockSignals(True)
+        self.quality_combo.clear()
+        self.quality_combo.addItem(tr("quality_auto"), "captured:auto")
+        for i, q in enumerate(self._captured_qualities):
+            label = str(q.get("label") or "").strip()
+            height = str(q.get("height") or "").strip()
+            if not label:
+                label = f"{height}p" if height else f"#{i + 1}"
+            self.quality_combo.addItem(label, f"captured:{i}")
+        self.quality_combo.blockSignals(False)
+
+    def _apply_captured_quality(self, token: str) -> None:
+        """Switch the manifest to the playlist captured for that quality."""
+        if token.isdigit() and int(token) < len(self._captured_qualities):
+            entry = self._captured_qualities[int(token)]
+            self.initial_manifest = entry.get("manifest") or self._default_manifest
+            self._selected_quality = str(entry.get("height") or "")
+        else:
+            self.initial_manifest = self._default_manifest
+            self._selected_quality = ""
+
+        vid_idx = self.cat_combo.findData(FileCategory.VIDEO.value)
+        if vid_idx >= 0 and self.cat_combo.currentIndex() != vid_idx:
+            self.cat_combo.blockSignals(True)
+            self.cat_combo.setCurrentIndex(vid_idx)
+            self.cat_combo.blockSignals(False)
+
+        if self.initial_manifest:
+            self._show_manifest_ready()
+
     def _on_quality_changed(self, idx: int) -> None:
-        quality = self.quality_combo.currentData() or ""
+        data = self.quality_combo.currentData() or ""
+        if isinstance(data, str) and data.startswith("captured:"):
+            self._apply_captured_quality(data.split(":", 1)[1])
+            return
+        self._selected_quality = data
+        quality = data
         curr_fn = self.filename_input.text().strip()
 
         if quality in ("128", "192", "320"):
@@ -414,9 +517,31 @@ class DownloadConfirmDialog(QDialog):
                 if ext.lower() in (".mp3", ".m4a", ".aac", ".wav", ".flac", ""):
                     self.filename_input.setText(f"{name_root}.mp4")
 
+    def _show_manifest_ready(self) -> None:
+        """Show stream info without probing: the HLS playlist is already captured."""
+        colors = get_palette()
+        self.info_box.setVisible(True)
+        self.info_box.setStyleSheet(
+            f"background-color: {colors['success_bg']};"
+            f" border: 1px solid {colors['success_border']}; border-radius: 6px;"
+        )
+        extra = ""
+        if self._captured_qualities:
+            extra = f" — {len(self._captured_qualities)} mức chất lượng khả dụng"
+        self.info_label.setText(
+            "✓ Đã bắt được luồng HLS từ trình duyệt (m3u8)"
+            + extra
+            + " — sẵn sàng tải, không cần kiểm tra URL."
+        )
+        self.info_label.setStyleSheet(f"color: {colors['success']}; font-weight: 600; font-size: 11px;")
+
     def _on_probe_clicked(self) -> None:
         url = self.url_input.text().strip()
         if not url:
+            return
+
+        if self.initial_manifest:
+            self._show_manifest_ready()
             return
 
         self._last_probed_url = url
@@ -439,12 +564,24 @@ class DownloadConfirmDialog(QDialog):
         worker.finished.connect(lambda: _ACTIVE_PROBE_WORKERS.discard(worker))
         worker.start()
 
+    @staticmethod
+    def _is_placeholder_filename(name: str) -> bool:
+        """True for names with no useful info (empty, generic, or extensionless tokens)."""
+        base = os.path.basename(name or "").strip()
+        if not base:
+            return True
+        if base.lower() in ("watch", "watch.html", "index.html", "download", "videoplayback"):
+            return True
+        # Signed CDNs often suggest an opaque UUID with no extension while the
+        # real name is only present in the URL.
+        return not os.path.splitext(base)[1]
+
     def _on_probe_finished(self, filename: str, total_bytes: int, supports_range: bool) -> None:
         self.btn_probe.setEnabled(True)
         self.btn_probe.setText(tr("add_btn_check"))
 
         curr_text = self.filename_input.text().strip()
-        is_generic = not curr_text or curr_text in ("watch", "watch.html", "index.html", "download", "videoplayback")
+        is_generic = self._is_placeholder_filename(curr_text)
         is_probe_generic = filename.lower() in ("index.mp4", "master.mp4", "video.mp4", "playlist.mp4", "index", "master")
         if curr_text and not is_generic and is_probe_generic:
             filename = curr_text
@@ -556,6 +693,10 @@ class DownloadConfirmDialog(QDialog):
 
     def get_result_data(self) -> dict:
         """Return the collected download options."""
+        if self._captured_qualities:
+            quality = self._selected_quality
+        else:
+            quality = self.quality_combo.currentData() or ""
         return {
             "url": self.url_input.text().strip(),
             "filename": self.filename_input.text().strip(),
@@ -563,7 +704,8 @@ class DownloadConfirmDialog(QDialog):
             "category": self.cat_combo.currentData(),
             "connections": self.conn_spin.value(),
             "headers": self.custom_headers,
-            "quality": self.quality_combo.currentData() or "",
+            "quality": quality,
+            "manifest": self.initial_manifest,
             "auto_start": (self.selected_action == "start_now"),
             "action": self.selected_action,
         }
