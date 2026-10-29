@@ -21,6 +21,37 @@
   // =========================================================================
   if (!IS_TOP_WINDOW) {
     let notifiedStream = "";
+    let lastManifestKey = "";
+    let mainManifest = "";
+    let mainStreamUrl = "";
+    let mainQualities = [];
+
+    // Content scripts live in an isolated world and cannot read page JS globals
+    // (jwplayer, hls.js). main_world.js forwards captured playlists via postMessage.
+    window.addEventListener("message", (e) => {
+      const d = e.data;
+      if (!d || d.__hdm_main !== true) return;
+
+      if (d.type === "HDM_MAIN_MANIFEST" && typeof d.manifest === "string") {
+        const text = d.manifest;
+        if (text.indexOf("#EXTM3U") === -1) return;
+        const qualities = Array.isArray(d.qualities) ? d.qualities : [];
+        const qualityKey = qualities.map((q) => q.label || q.height || q.manifest.length).join(",");
+        const key = `${text.length}:${text.slice(0, 48)}:${text.slice(-32)}:${qualityKey}`;
+        if (key === lastManifestKey) return;
+        // Prefer a media playlist (#EXTINF) over a master playlist: relative
+        // variant URIs in a master cannot resolve when downloaded from a file.
+        if (mainManifest.indexOf("#EXTINF") !== -1 && text.indexOf("#EXTINF") === -1) return;
+        lastManifestKey = key;
+        mainManifest = text;
+        mainQualities = qualities;
+        notifyParent();
+      } else if (d.type === "HDM_MAIN_STREAM_URL" && typeof d.url === "string") {
+        if (!/^https?:/i.test(d.url) || d.url === mainStreamUrl) return;
+        mainStreamUrl = d.url;
+        notifyParent();
+      }
+    });
 
     function findStreamInSubframe() {
       // 1. Check Resource Timing API (m3u8, mpd, mp4 loaded by hls.js / playerjs)
@@ -66,8 +97,33 @@
     }
 
     function notifyParent() {
-      const streamUrl = findStreamInSubframe();
+      const streamUrl = mainStreamUrl || findStreamInSubframe();
       const vid = document.querySelector("video");
+
+      if (mainStreamUrl || mainManifest) {
+        const url = mainStreamUrl || document.referrer || window.location.href;
+        const qualityKey = mainQualities.map((q) => q.label || q.height || "").join(",");
+        const key = mainStreamUrl
+          ? `u:${mainStreamUrl}`
+          : `m:${mainManifest.length}:${mainManifest.slice(0, 48)}:${mainManifest.slice(-32)}:${qualityKey}`;
+        if (key !== notifiedStream) {
+          notifiedStream = key;
+          try {
+            window.parent.postMessage(
+              {
+                type: "HDM_CHILD_STREAM",
+                url: url,
+                manifest: mainManifest || "",
+                qualities: mainQualities,
+                title: document.title || "",
+              },
+              "*"
+            );
+          } catch (e) {}
+        }
+        return;
+      }
+
       if (!vid && !streamUrl) return;
 
       if (streamUrl && streamUrl !== notifiedStream) {
@@ -173,6 +229,9 @@
   ];
 
   let lastSniffedMedia = null;
+  let lastCapturedManifest = "";
+  let lastCapturedQualities = [];
+  let lastCapturedQualitiesKey = "";
   const activeButtons = []; // Array of { targetEl, wrap, btn, qualityMenu, updatePos, mediaOverride }
 
   // Query background for already sniffed media streams on page load
@@ -192,9 +251,9 @@
   syncCapturedMediaFromBackground();
 
   function isYouTube() {
-    return (
-      window.location.hostname.includes("youtube.com") ||
-      window.location.hostname.includes("youtu.be")
+    const host = (window.location.hostname || "").toLowerCase();
+    return ["youtube.com", "youtube-nocookie.com", "youtu.be"].some(
+      (domain) => host === domain || host.endsWith("." + domain)
     );
   }
 
@@ -278,6 +337,8 @@
     return el;
   }
 
+  let toastTimer = null;
+
   function showToast(msg, isError) {
     let toast = document.querySelector(".hdm-toast");
     if (!toast) {
@@ -287,7 +348,9 @@
     }
     toast.textContent = msg;
     toast.className = `hdm-toast show ${isError ? "error" : "success"}`;
-    setTimeout(() => {
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastTimer = null;
       toast.className = "hdm-toast";
     }, 4000);
   }
@@ -340,7 +403,35 @@
       sourceBtn.setAttribute("title", "Đang kết nối HDM...");
     }
 
+    function showConnectError() {
+      if (sourceBtn) {
+        sourceBtn.classList.remove("loading");
+        sourceBtn.classList.add("error");
+        sourceBtn.innerHTML = SVG_ALERT_ICON;
+        sourceBtn.setAttribute(
+          "title",
+          "Không thể kết nối với HDM. Vui lòng mở ứng dụng HDM trên máy tính!"
+        );
+        setTimeout(() => {
+          sourceBtn.classList.remove("error");
+          sourceBtn.innerHTML = originalHtml;
+          sourceBtn.setAttribute("title", "Tải video này với HDM");
+        }, 3000);
+      }
+      showToast("⚠️ Vui lòng mở ứng dụng HDM (HDM.exe) trên máy tính trước khi bấm tải!", true);
+    }
+
     const pageUrl = window.location.href;
+    const manifest =
+      (mediaOverride && mediaOverride.manifest) ||
+      (lastSniffedMedia && lastSniffedMedia.manifest) ||
+      lastCapturedManifest ||
+      "";
+    const qualities =
+      (mediaOverride && mediaOverride.qualities && mediaOverride.qualities.length && mediaOverride.qualities) ||
+      (lastSniffedMedia && lastSniffedMedia.qualities && lastSniffedMedia.qualities.length && lastSniffedMedia.qualities) ||
+      lastCapturedQualities ||
+      [];
 
     // Refresh captured media from background before triggering
     let finalTargetUrl =
@@ -350,6 +441,7 @@
 
     // If still resolved to page HTML, try background synchronously
     if (
+      !manifest &&
       !isYouTube() &&
       (!finalTargetUrl ||
         finalTargetUrl === pageUrl ||
@@ -372,40 +464,35 @@
       (lastSniffedMedia && lastSniffedMedia.title) ||
       getVideoTitle();
 
-    const isStreamManifest = finalTargetUrl.includes(".m3u8") || finalTargetUrl.includes(".mpd");
+    const isStreamManifest =
+      finalTargetUrl.includes(".m3u8") ||
+      finalTargetUrl.includes(".mpd") ||
+      !!manifest;
 
-    chrome.runtime.sendMessage(
-      {
-        action: "download_media",
-        data: {
-          url: finalTargetUrl,
-          pageUrl: pageUrl,
-          title: title,
-          format: formatType || "mp4",
-          quality: qualityType || "",
-          ext: mediaOverride && mediaOverride.ext ? mediaOverride.ext : (formatType === "mp3" ? "mp3" : "mp4"),
-          isStreaming: isYouTube() || isStreamManifest || finalTargetUrl === pageUrl,
-        },
+    const message = {
+      action: "download_media",
+      data: {
+        url: finalTargetUrl,
+        pageUrl: pageUrl,
+        title: title,
+        format: formatType || "mp4",
+        quality: qualityType || "",
+        ext: mediaOverride && mediaOverride.ext ? mediaOverride.ext : (formatType === "mp3" ? "mp3" : "mp4"),
+        manifest: manifest,
+        qualities: qualities,
+        isStreaming: isYouTube() || isStreamManifest || finalTargetUrl === pageUrl,
       },
-      (res) => {
+    };
+
+    try {
+      chrome.runtime.sendMessage(message, (res) => {
         const lastErr = chrome.runtime.lastError;
         if (sourceBtn) sourceBtn.classList.remove("loading");
 
         if (lastErr || !res || !res.ok) {
-          if (sourceBtn) {
-            sourceBtn.classList.add("error");
-            sourceBtn.innerHTML = SVG_ALERT_ICON;
-            sourceBtn.setAttribute(
-              "title",
-              "Không thể kết nối với HDM. Vui lòng mở ứng dụng HDM trên máy tính!"
-            );
-            setTimeout(() => {
-              sourceBtn.classList.remove("error");
-              sourceBtn.innerHTML = originalHtml;
-              sourceBtn.setAttribute("title", "Tải video này với HDM");
-            }, 3000);
-          }
-          showToast("⚠️ Vui lòng mở ứng dụng HDM (HDM.exe) trên máy tính trước khi bấm tải!", true);
+          showConnectError();
+        } else if (res.cancelled) {
+          showToast("Đã huỷ tải trong HDM.", false);
         } else {
           if (sourceBtn) {
             sourceBtn.classList.add("success");
@@ -418,8 +505,11 @@
             }, 2500);
           }
         }
-      }
-    );
+      });
+    } catch (e) {
+      // The extension was reloaded/updated: this page's context is dead.
+      showConnectError();
+    }
   }
 
   function isAlreadyTracked(candidateEl) {
@@ -696,14 +786,17 @@
         triggerDownload(fmt, q, btn, targetEl, entry.mediaOverride);
       }
     });
-
-    // Close menu when clicking outside
-    document.addEventListener("click", (e) => {
-      if (!qualityMenu.contains(e.target) && !btn.contains(e.target) && !wrap.contains(e.target)) {
-        qualityMenu.classList.remove("show");
-      }
-    });
   }
+
+  // A single document-level listener closes any open menu. Clicks on a button
+  // or inside a menu stop propagation, so they never reach this handler.
+  // Registering one listener here (instead of one per button) keeps the page
+  // from accumulating handlers when players are re-mounted by the site.
+  document.addEventListener("click", () => {
+    document.querySelectorAll(".hdm-quality-menu.show").forEach((menu) => {
+      menu.classList.remove("show");
+    });
+  });
 
   function updateAllPlacements() {
     for (const entry of activeButtons) {
@@ -767,10 +860,16 @@
     if (!e.data) return;
 
     if (e.data.type === "HDM_CHILD_STREAM" && e.data.url) {
+      const childManifest = typeof e.data.manifest === "string" ? e.data.manifest : "";
+      const childQualities = Array.isArray(e.data.qualities) ? e.data.qualities : [];
+      if (childManifest) lastCapturedManifest = childManifest;
+      if (childQualities.length) lastCapturedQualities = childQualities;
       lastSniffedMedia = {
         url: e.data.url,
         title: e.data.title || getVideoTitle(),
         ext: e.data.url.includes(".mp3") ? "mp3" : "mp4",
+        manifest: childManifest,
+        qualities: childQualities,
       };
       const iframes = document.querySelectorAll("iframe");
       for (const ifr of iframes) {
@@ -800,6 +899,52 @@
     }
   });
 
+  // Receive playlists / stream URLs captured by main_world.js in this document
+  window.addEventListener("message", (e) => {
+    const d = e.data;
+    if (!d || d.__hdm_main !== true) return;
+
+    if (d.type === "HDM_MAIN_MANIFEST" && typeof d.manifest === "string" && d.manifest.indexOf("#EXTM3U") !== -1) {
+      const qualities = Array.isArray(d.qualities) ? d.qualities : [];
+      const qualitiesKey = qualities
+        .map((q) => `${q.label || ""}:${(q.manifest || "").length}`)
+        .join("|");
+      if (
+        lastSniffedMedia &&
+        lastSniffedMedia.manifest === d.manifest &&
+        lastCapturedQualitiesKey === qualitiesKey
+      ) {
+        return;
+      }
+      lastCapturedQualitiesKey = qualitiesKey;
+      lastCapturedManifest = d.manifest;
+      lastCapturedQualities = qualities;
+      lastSniffedMedia = {
+        url: window.location.href,
+        title: getVideoTitle(),
+        ext: "mp4",
+        manifest: d.manifest,
+        qualities: qualities,
+      };
+      activeButtons.forEach((entry) => {
+        entry.mediaOverride = lastSniffedMedia;
+      });
+      scanVideos();
+    } else if (d.type === "HDM_MAIN_STREAM_URL" && typeof d.url === "string" && /^https?:/i.test(d.url)) {
+      if (lastSniffedMedia && lastSniffedMedia.manifest) return;
+      if (lastSniffedMedia && lastSniffedMedia.url === d.url) return;
+      lastSniffedMedia = {
+        url: d.url,
+        title: getVideoTitle(),
+        ext: "mp4",
+      };
+      activeButtons.forEach((entry) => {
+        entry.mediaOverride = lastSniffedMedia;
+      });
+      scanVideos();
+    }
+  });
+
   // Listen for sniffed media messages from background service worker
   chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     if (req.action === "hdm_media_detected" && req.media) {
@@ -809,6 +954,13 @@
       });
       scanVideos();
       sendResponse({ ok: true });
+    } else if (req.action === "get_page_stream") {
+      const media = lastSniffedMedia ? { ...lastSniffedMedia } : null;
+      if (media) {
+        media.manifest = lastCapturedManifest || media.manifest || "";
+        media.qualities = lastCapturedQualities.length ? lastCapturedQualities : media.qualities || [];
+      }
+      sendResponse({ ok: true, media });
     }
   });
 

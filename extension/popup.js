@@ -110,6 +110,22 @@ async function loadCapturedMedia() {
     if (!tabs || !tabs.length || !tabs[0].id) return;
     const tab = tabs[0];
 
+    // Ask the page content script for the player-captured manifest (blob HLS)
+    let pageStream = null;
+    try {
+      pageStream = await new Promise((resolve) => {
+        chrome.tabs.sendMessage(tab.id, { action: "get_page_stream" }, (r) => {
+          if (chrome.runtime.lastError || !r || !r.ok) {
+            resolve(null);
+          } else {
+            resolve(r.media || null);
+          }
+        });
+      });
+    } catch (e) {
+      pageStream = null;
+    }
+
     chrome.runtime.sendMessage({ action: "get_captured_media", tabId: tab.id }, (res) => {
       if (chrome.runtime.lastError || !res || !res.ok) return;
 
@@ -170,6 +186,15 @@ async function loadCapturedMedia() {
           dlBtn.disabled = true;
           dlBtn.textContent = "Đang gửi...";
 
+          // The in-page playlist only stands in for the row when that row is
+          // itself a stream of this page. For a direct mp4/mp3 row the file the
+          // user picked must win, otherwise the popup would download another
+          // video that happens to be playing on the same page.
+          const isStreamRow = item.type === "m3u8" || item.type === "mpd";
+          const attachManifest = Boolean(
+            pageStream && pageStream.manifest && (isStreamRow || item.url === pageStream.url)
+          );
+
           chrome.runtime.sendMessage(
             {
               action: "download_media",
@@ -179,11 +204,24 @@ async function loadCapturedMedia() {
                 title: item.title,
                 format: "mp4",
                 ext: item.ext || "mp4",
+                manifest: attachManifest ? pageStream.manifest : "",
+                qualities:
+                  attachManifest && Array.isArray(pageStream.qualities) ? pageStream.qualities : [],
                 isStreaming: true,
               },
             },
             (dlRes) => {
-              if (dlRes && dlRes.ok) {
+              if (dlRes && dlRes.ok && dlRes.cancelled) {
+                dlBtn.textContent = "Đã huỷ";
+                dlBtn.style.backgroundColor = "#6b7280";
+                dlBtn.style.color = "#ffffff";
+                setTimeout(() => {
+                  dlBtn.disabled = false;
+                  dlBtn.textContent = "Tải";
+                  dlBtn.style.backgroundColor = "";
+                  dlBtn.style.color = "";
+                }, 1500);
+              } else if (dlRes && dlRes.ok) {
                 dlBtn.textContent = "✓ Đã gửi";
                 dlBtn.style.backgroundColor = "#10b981";
                 dlBtn.style.color = "#ffffff";

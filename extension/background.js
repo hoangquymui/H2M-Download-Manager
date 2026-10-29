@@ -52,18 +52,20 @@ async function pingHDM() {
 /**
  * Send download request to HDM desktop application.
  */
-async function sendToHDM(data) {
+async function sendToHDM(data, timeoutMs = 15000) {
   for (const baseUrl of getHdmUrls()) {
     try {
-      const res = await fetch(`${baseUrl}/api/v1/download`, {
+      const options = {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-HDM-Client": "extension",
         },
         body: JSON.stringify(data),
-        signal: AbortSignal.timeout(8000),
-      });
+      };
+      // timeoutMs = 0 waits until HDM answers, however long its dialog stays open.
+      if (timeoutMs > 0) options.signal = AbortSignal.timeout(timeoutMs);
+      const res = await fetch(`${baseUrl}/api/v1/download`, options);
       if (res && res.ok) return await res.json();
     } catch (e) {
       // try next
@@ -91,6 +93,83 @@ async function showHDMWindow() {
 }
 
 /**
+ * True when a name ends with a plausible file extension ("7z", "mp4", "tar.gz").
+ * Version tails such as ".2407" are rejected because they contain no letter.
+ */
+function hasFileExtension(name) {
+  if (!name || !name.includes(".")) return false;
+  const ext = name.split(".").pop();
+  return ext.length > 1 && ext.length <= 12 && /^[a-z0-9]+$/i.test(ext) && /[a-z]/i.test(ext);
+}
+
+/**
+ * Recover the real filename from a download URL. Signed CDN links often carry
+ * an opaque UUID as the suggested name while the real name sits in the path or
+ * in the response-content-disposition query parameter.
+ */
+function guessFilenameFromUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    const decode = (value) => {
+      try {
+        return decodeURIComponent(value);
+      } catch (e) {
+        return value;
+      }
+    };
+
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const base = decode(segments[segments.length - 1] || "");
+    if (hasFileExtension(base)) return base;
+
+    for (const key of ["response-content-disposition", "content-disposition"]) {
+      const value = parsed.searchParams.get(key);
+      if (!value) continue;
+      const match = value.match(/filename\*?\s*=\s*(?:UTF-8'')?["']?([^"';]+)/i);
+      if (match) {
+        const candidate = decode(match[1].trim().replace(/^"|"$/g, ""));
+        if (hasFileExtension(candidate)) return candidate;
+      }
+    }
+
+    for (const key of ["filename", "file", "name"]) {
+      const value = parsed.searchParams.get(key);
+      if (!value) continue;
+      const candidate = decode(value.trim());
+      if (hasFileExtension(candidate)) return candidate;
+    }
+  } catch (e) {
+    // Not a parseable URL
+  }
+  return "";
+}
+
+/**
+ * Keep only well-formed captured quality entries, mirroring the server limits.
+ */
+function sanitizeQualities(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  let total = 0;
+  for (const item of list.slice(0, 8)) {
+    if (!item || typeof item !== "object") continue;
+    const manifest =
+      typeof item.manifest === "string" && item.manifest.indexOf("#EXTM3U") !== -1
+        ? item.manifest
+        : "";
+    if (!manifest) continue;
+    if (total + manifest.length > 5 * 1024 * 1024) break;
+    total += manifest.length;
+    out.push({
+      label: String(item.label || "").slice(0, 24),
+      height: String(item.height || "").slice(0, 8),
+      manifest: manifest,
+    });
+  }
+  return out;
+}
+
+/**
  * Collect cookie string for the specific download URL.
  */
 async function getCookiesForUrl(url) {
@@ -100,6 +179,60 @@ async function getCookiesForUrl(url) {
   } catch (e) {
     return "";
   }
+}
+
+/**
+ * Pause an in-progress download, retrying because Chrome often rejects
+ * pause() while the download is still starting right after onCreated.
+ * Returns the latest DownloadItem, or null when it is gone.
+ */
+async function ensurePaused(id, attempts = 12) {
+  let last = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const [current] = await chrome.downloads.search({ id });
+      last = current || null;
+      if (!current || current.state !== "in_progress") return last;
+      if (!current.paused) {
+        await chrome.downloads.pause(id);
+      }
+      const [after] = await chrome.downloads.search({ id });
+      last = after || null;
+      if (!after || after.state !== "in_progress" || after.paused) return last;
+    } catch (e) {
+      // Retry: pause() throws while the download is still initializing.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return last;
+}
+
+/**
+ * Cancel a browser download and remove its entry from the downloads list.
+ */
+async function cancelAndEraseDownload(id) {
+  try {
+    await chrome.downloads.cancel(id);
+  } catch (e) {
+    // Already finished or interrupted
+  }
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const [current] = await chrome.downloads.search({ id });
+      if (!current) return;
+      if (current.state !== "in_progress") {
+        await chrome.downloads.erase({ id });
+        return;
+      }
+      await chrome.downloads.cancel(id);
+    } catch (e) {
+      // Retry until the download actually stops
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  try {
+    await chrome.downloads.erase({ id });
+  } catch (e) {}
 }
 
 /**
@@ -117,36 +250,58 @@ chrome.downloads.onCreated.addListener(async (item) => {
   // Mark processed to prevent duplicates
   processedDownloads.add(item.id);
 
-  // 1. Pause download in browser first
-  try {
-    await chrome.downloads.pause(item.id);
-  } catch (e) {
-    // If cannot pause, proceed anyway
+  // 1. Pause the browser copy before anything is transferred.
+  await ensurePaused(item.id);
+
+  const [latest] = (await chrome.downloads.search({ id: item.id }).catch(() => [])) || [];
+  if (latest && latest.state === "complete") {
+    // A tiny/fast download already finished: keep the browser copy instead
+    // of asking HDM to download a duplicate.
+    return;
   }
 
-  // 2. Prepare payload for HDM
-  const cookies = await getCookiesForUrl(url);
-  const payload = {
-    url: url,
-    filename: item.filename ? item.filename.split(/[\/\\]/).pop() : "",
-    referer: item.referrer || "",
-    cookies: cookies,
-    user_agent: navigator.userAgent,
-  };
+  // Chrome may auto-resume a paused download, so hold it paused for as long
+  // as the desktop confirmation dialog stays open. The interval also keeps the
+  // MV3 service worker alive during that wait.
+  const keepPaused = setInterval(() => {
+    ensurePaused(item.id, 1);
+  }, 800);
 
-  // 3. Send to HDM Desktop
-  const response = await sendToHDM(payload);
-
-  if (response && response.ok) {
-    // HDM took over! Cancel and clean browser download entry
-    try {
-      await chrome.downloads.cancel(item.id);
-      await chrome.downloads.erase({ id: item.id });
-    } catch (e) {
-      // Ignore
+  let response = null;
+  try {
+    // 2. Prepare payload for HDM
+    const cookies = await getCookiesForUrl(url);
+    let suggestedName = item.filename ? item.filename.split(/[\/\\]/).pop() : "";
+    if (!hasFileExtension(suggestedName)) {
+      suggestedName = guessFilenameFromUrl(url) || suggestedName;
     }
+    const payload = {
+      url: url,
+      filename: suggestedName,
+      referer: item.referrer || "",
+      cookies: cookies,
+      user_agent: navigator.userAgent,
+    };
+
+    // 3. Send to HDM Desktop. The desktop answers only when the user resolves
+    //    its confirmation dialog, so wait without a timeout.
+    response = await sendToHDM(payload, 0);
+  } finally {
+    clearInterval(keepPaused);
+  }
+
+  const mode = response && response.mode;
+
+  if (response && response.ok && mode !== "cancelled") {
+    // HDM accepted the job and now owns the download.
+    await cancelAndEraseDownload(item.id);
+  } else if (response && mode === "cancelled") {
+    // The user said no in the HDM dialog: drop the browser copy as well
+    // instead of resuming a download they explicitly declined.
+    await cancelAndEraseDownload(item.id);
   } else {
-    // HDM is not running or rejected: Resume in browser smoothly
+    // HDM is unreachable or the dialog timed out without a decision, so keep
+    // the browser download: an offline/disabled HDM must not block browsing.
     try {
       await chrome.downloads.resume(item.id);
     } catch (e) {
@@ -311,8 +466,8 @@ async function recordCapturedMedia(tabId, url, mimeType = "") {
     list.unshift(mediaItem);
     if (list.length > 25) list.pop();
 
-    chrome.action.setBadgeText({ tabId, text: String(list.length) });
-    chrome.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" });
+    chrome.action.setBadgeText({ tabId, text: String(list.length) })?.catch?.(() => {});
+    chrome.action.setBadgeBackgroundColor({ tabId, color: "#2563eb" })?.catch?.(() => {});
 
     chrome.tabs.sendMessage(tabId, {
       action: "hdm_media_detected",
@@ -352,7 +507,7 @@ chrome.webRequest.onHeadersReceived.addListener(
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === "loading" && changeInfo.url) {
     capturedMediaByTab.delete(tabId);
-    chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+    chrome.action.setBadgeText({ tabId, text: "" })?.catch?.(() => {});
   }
 });
 
@@ -397,7 +552,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     user_agent: navigator.userAgent,
   };
 
-  const res = await sendToHDM(payload);
+  // Wait out the desktop confirmation dialog instead of failing early.
+  const res = await sendToHDM(payload, 0);
   if (res && res.ok) {
     // Download request sent to HDM; modal will display on desktop without forcing main window
   } else {
@@ -410,6 +566,21 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
+/**
+ * True when the URL belongs to a site yt-dlp handles as a streaming platform.
+ * Matched by hostname so "notyoutube.com" is not treated as YouTube.
+ */
+function isStreamingHost(rawUrl) {
+  try {
+    const host = new URL(rawUrl).hostname.toLowerCase();
+    return ["youtube.com", "youtube-nocookie.com", "youtu.be"].some(
+      (domain) => host === domain || host.endsWith("." + domain)
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
 function sanitizeFilename(name) {
   return (name || "video")
     .replace(/[\\/:*?"<>|]/g, "_")
@@ -418,8 +589,20 @@ function sanitizeFilename(name) {
 }
 
 async function handleMediaDownload(data, sender) {
+  // Captured in-page HLS manifest (blob-based players like jwplayer/ibytedance).
+  // When present it is the source of truth and no URL substitution may happen.
+  const manifest =
+    typeof data.manifest === "string" && data.manifest.indexOf("#EXTM3U") !== -1
+      ? data.manifest
+      : "";
+  const hasManifest = manifest.length > 0;
+
   let targetUrl = data.url || data.pageUrl;
   const tabId = (sender && sender.tab && sender.tab.id) || null;
+
+  if (hasManifest && !/^https?:/i.test(targetUrl || "")) {
+    targetUrl = data.pageUrl || targetUrl;
+  }
 
   // CRITICAL FIX: If targetUrl is an HTML web page (ends in .html, .htm or matches pageUrl)
   // or does not look like a media stream (no m3u8/mpd/mp4), substitute with the real
@@ -434,9 +617,9 @@ async function handleMediaDownload(data, sender) {
       !targetUrl.includes(".mpd") &&
       !targetUrl.match(/\.(mp4|webm|mkv|m4v|mov|flv)($|\?)/i));
 
-  const isYouTube = targetUrl.includes("youtube.com") || targetUrl.includes("youtu.be");
+  const isYouTube = isStreamingHost(targetUrl) || isStreamingHost(data.pageUrl || "");
 
-  if (!isYouTube && isHtmlOrPageUrl && tabId) {
+  if (!hasManifest && !isYouTube && isHtmlOrPageUrl && tabId) {
     const list = capturedMediaByTab.get(tabId) || [];
     if (list.length > 0) {
       // Pick the most recent media stream captured for this tab
@@ -466,19 +649,32 @@ async function handleMediaDownload(data, sender) {
     is_video: true,
   };
 
-  const res = await sendToHDM(payload);
+  if (hasManifest) {
+    payload.manifest = manifest;
+  }
+
+  const qualities = sanitizeQualities(data.qualities);
+  if (qualities.length) {
+    payload.qualities = qualities;
+  }
+
+  // Wait out the desktop confirmation dialog instead of failing early.
+  const res = await sendToHDM(payload, 0);
   if (res && res.ok) {
     // Download request sent to HDM; modal will display on desktop without forcing main window
     return { ok: true };
-  } else {
-    chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icons/icon128.png",
-      title: "HDM Download Manager",
-      message: "Không thể kết nối với ứng dụng HDM. Vui lòng kiểm tra cổng kết nối hoặc mở HDM.",
-    });
-    return { ok: false, error: "Cannot connect to HDM" };
   }
+  if (res && res.mode === "cancelled") {
+    // The user declined in HDM: a valid outcome, not a connection failure.
+    return { ok: true, cancelled: true };
+  }
+  chrome.notifications.create({
+    type: "basic",
+    iconUrl: "icons/icon128.png",
+    title: "HDM Download Manager",
+    message: "Không thể kết nối với ứng dụng HDM. Vui lòng kiểm tra cổng kết nối hoặc mở HDM.",
+  });
+  return { ok: false, error: "Cannot connect to HDM" };
 }
 
 // Listen to popup and content script messages
@@ -505,7 +701,7 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     const tabId = req.tabId || (sender && sender.tab && sender.tab.id);
     if (tabId) {
       capturedMediaByTab.delete(tabId);
-      chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+      chrome.action.setBadgeText({ tabId, text: "" })?.catch?.(() => {});
     }
     sendResponse({ ok: true });
     return true;

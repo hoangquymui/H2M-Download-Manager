@@ -2,7 +2,8 @@
   "manifest_version": 3,
   "name": "HDM — H2M Download Manager",
   "short_name": "HDM",
-  "version": "1.2.5",
+  "version": "1.3.0",
+  "minimum_chrome_version": "111",
   "description": "Tiện ích tự động bắt liên kết tải, giám sát luồng phát video (HLS/m3u8, DASH) và nút tải video trực tiếp cho HDM.",
   "permissions": [
     "downloads",
@@ -22,6 +23,13 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["main_world.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
