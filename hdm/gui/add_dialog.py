@@ -195,6 +195,8 @@ class DownloadConfirmDialog(QDialog):
             self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
 
         self._init_ui()
+        # Folder auto-categorize wrote last; a differing value means the user chose it.
+        self._auto_dir = self.config.default_save_dir
 
         if self._captured_qualities:
             self._populate_captured_qualities()
@@ -405,8 +407,18 @@ class DownloadConfirmDialog(QDialog):
 
         # If auto-categorize is enabled, update save folder
         if self.config.auto_categorize:
-            sub = get_category_subfolder(cat, self.config.default_save_dir)
-            self.dir_input.setText(sub)
+            self._apply_category_dir(cat)
+
+    def _apply_category_dir(self, cat: FileCategory) -> None:
+        """Follow the category folder unless the user picked a folder themselves."""
+        current = self.dir_input.text().strip()
+        if current:
+            auto = os.path.normcase(os.path.abspath(self._auto_dir))
+            if os.path.normcase(os.path.abspath(current)) != auto:
+                return
+        target = get_category_subfolder(cat, self.config.default_save_dir)
+        self.dir_input.setText(target)
+        self._auto_dir = target
 
     def _on_url_changed(self, text: str) -> None:
         url = text.strip()
@@ -424,9 +436,7 @@ class DownloadConfirmDialog(QDialog):
         cat_val = self.cat_combo.currentData()
         if self.config.auto_categorize and cat_val:
             try:
-                cat = FileCategory(cat_val)
-                sub = get_category_subfolder(cat, self.config.default_save_dir)
-                self.dir_input.setText(sub)
+                self._apply_category_dir(FileCategory(cat_val))
             except Exception:
                 pass
 
