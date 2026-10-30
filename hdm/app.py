@@ -148,6 +148,7 @@ def main() -> None:
         if not arg.startswith("--") and (arg.startswith("http://") or arg.startswith("https://")):
             url_arg = arg
             break
+    autostart_mode = "--autostart" in sys.argv
 
     # --- Single Instance Enforcement ---
     socket = QLocalSocket()
@@ -157,7 +158,8 @@ def main() -> None:
         logger.info("Another instance is already running. Notifying existing window and exiting.")
         if url_arg:
             socket.write(f"DOWNLOAD {url_arg}\n".encode("utf-8"))
-        else:
+        elif not autostart_mode:
+            # A boot-time autostart must never pop the window the user closed.
             socket.write(b"SHOW\n")
         socket.waitForBytesWritten(1000)
         socket.disconnectFromServer()
@@ -226,7 +228,6 @@ def main() -> None:
     app.aboutToQuit.connect(cleanup)
 
     # If launched on Windows startup with --autostart, stay minimized to system tray
-    autostart_mode = "--autostart" in sys.argv
     if not autostart_mode:
         main_window.show()
         if url_arg:
