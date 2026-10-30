@@ -13,10 +13,20 @@ chrome.storage.local.get({ serverPort: 9618 }, (data) => {
   }
 });
 
-// React immediately if port is changed in settings/popup
+// React immediately if port or panel settings change in settings/popup
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.serverPort) {
+  if (area !== "local") return;
+  if (changes.serverPort) {
     currentPort = parseInt(changes.serverPort.newValue, 10) || 9618;
+  }
+  if (changes.enableVideoPanel) {
+    videoPanelEnabled = !!changes.enableVideoPanel.newValue;
+    if (!videoPanelEnabled) {
+      capturedMediaByTab.forEach((_list, tabId) => {
+        chrome.action.setBadgeText({ tabId, text: "" })?.catch?.(() => {});
+      });
+      capturedMediaByTab.clear();
+    }
   }
 });
 
@@ -29,6 +39,57 @@ const processedDownloads = new Set();
 
 // In-memory media stream cache per tab: Map<tabId, Array<MediaItem>>
 const capturedMediaByTab = new Map();
+
+// Media handed to HDM before, so a page that replays the same stream (CDN URLs
+// are re-signed on every visit) is not captured and listed all over again.
+const downloadedUrlKeys = new Set();
+const MAX_DOWNLOADED_KEYS = 500;
+let videoPanelEnabled = true;
+
+function mediaUrlKey(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    // Query strings carry per-session tokens, so compare origin + path.
+    if (u.pathname && u.pathname !== "/") return `${u.origin}${u.pathname}`;
+    return u.href;
+  } catch (e) {
+    return rawUrl || "";
+  }
+}
+
+async function loadRememberedState() {
+  try {
+    const data = await chrome.storage.local.get({
+      downloadedUrls: {},
+      enableVideoPanel: true,
+    });
+    videoPanelEnabled = !!data.enableVideoPanel;
+    Object.keys(data.downloadedUrls || {}).forEach((key) => downloadedUrlKeys.add(key));
+  } catch (e) {}
+}
+
+loadRememberedState();
+
+async function rememberDownloaded(rawUrl) {
+  const key = mediaUrlKey(rawUrl);
+  if (!key) return;
+  downloadedUrlKeys.add(key);
+  try {
+    const data = await chrome.storage.local.get({ downloadedUrls: {} });
+    const map = data.downloadedUrls || {};
+    map[key] = Date.now();
+    const entries = Object.entries(map);
+    if (entries.length > MAX_DOWNLOADED_KEYS) {
+      entries.sort((a, b) => a[1] - b[1]);
+      entries.slice(0, entries.length - MAX_DOWNLOADED_KEYS).forEach(([old]) => delete map[old]);
+    }
+    await chrome.storage.local.set({ downloadedUrls: map });
+    if (downloadedUrlKeys.size > MAX_DOWNLOADED_KEYS) {
+      downloadedUrlKeys.clear();
+      Object.keys(map).forEach((k) => downloadedUrlKeys.add(k));
+    }
+  } catch (e) {}
+}
 
 /**
  * Check if HDM desktop app is currently running.
@@ -294,6 +355,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
 
   if (response && response.ok && mode !== "cancelled") {
     // HDM accepted the job and now owns the download.
+    await rememberDownloaded(url);
     await cancelAndEraseDownload(item.id);
   } else if (response && mode === "cancelled") {
     // The user said no in the HDM dialog: drop the browser copy as well
@@ -420,6 +482,8 @@ function detectMediaType(rawUrl, mimeType = "") {
 // Record captured media item into tab cache
 async function recordCapturedMedia(tabId, url, mimeType = "") {
   if (tabId < 0) return;
+  if (!videoPanelEnabled) return;
+  if (downloadedUrlKeys.has(mediaUrlKey(url))) return;
   const mediaInfo = detectMediaType(url, mimeType);
   if (!mediaInfo) return;
 
@@ -555,6 +619,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   // Wait out the desktop confirmation dialog instead of failing early.
   const res = await sendToHDM(payload, 0);
   if (res && res.ok) {
+    await rememberDownloaded(targetUrl);
     // Download request sent to HDM; modal will display on desktop without forcing main window
   } else {
     chrome.notifications.create({
@@ -661,6 +726,7 @@ async function handleMediaDownload(data, sender) {
   // Wait out the desktop confirmation dialog instead of failing early.
   const res = await sendToHDM(payload, 0);
   if (res && res.ok) {
+    await rememberDownloaded(targetUrl);
     // Download request sent to HDM; modal will display on desktop without forcing main window
     return { ok: true };
   }

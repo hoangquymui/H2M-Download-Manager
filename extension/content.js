@@ -232,7 +232,13 @@
   let lastCapturedManifest = "";
   let lastCapturedQualities = [];
   let lastCapturedQualitiesKey = "";
+  let panelEnabled = true;
   const activeButtons = []; // Array of { targetEl, wrap, btn, qualityMenu, updatePos, mediaOverride }
+
+  chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
+    panelEnabled = !!settings.enableVideoPanel;
+    if (!panelEnabled) removeAllButtons();
+  });
 
   // Query background for already sniffed media streams on page load
   function syncCapturedMediaFromBackground() {
@@ -632,6 +638,7 @@
    * Mount the download button on document.body and dock it strictly OUTSIDE playerBox.
    */
   function createOutsideButton(playerBox, mediaOverride) {
+    if (!panelEnabled) return;
     const targetEl = resolvePlayerBox(playerBox);
     if (!targetEl || targetEl.__hdm_dismissed__) return;
 
@@ -804,6 +811,29 @@
     }
   }
 
+  /** Remove every injected badge (used when the video panel is switched off). */
+  function removeAllButtons() {
+    for (const entry of activeButtons) {
+      try {
+        entry.wrap.remove();
+        entry.qualityMenu.remove();
+      } catch (e) {
+        // Element already detached
+      }
+    }
+    activeButtons.length = 0;
+  }
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.enableVideoPanel) return;
+    panelEnabled = !!changes.enableVideoPanel.newValue;
+    if (panelEnabled) {
+      doScanVideos();
+    } else {
+      removeAllButtons();
+    }
+  });
+
   window.addEventListener("scroll", updateAllPlacements, { passive: true });
   window.addEventListener("resize", updateAllPlacements, { passive: true });
   document.addEventListener("fullscreenchange", updateAllPlacements);
@@ -822,7 +852,10 @@
 
   function doScanVideos() {
     chrome.storage.local.get({ enableVideoPanel: true }, (settings) => {
-      if (!settings.enableVideoPanel) return;
+      if (!settings.enableVideoPanel) {
+        removeAllButtons();
+        return;
+      }
 
       // 1. Known video/stream player containers
       for (const sel of PLAYER_BOX_SELECTORS) {
