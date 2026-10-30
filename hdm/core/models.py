@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 
 from hdm.utils.category import FileCategory, get_category_for_filename
 
+TEMP_DIR_NAME = ".hdm_tmp"
+
 
 class TaskStatus(str, Enum):
     QUEUED = "Hàng đợi"
@@ -108,11 +110,30 @@ class DownloadTask:
         return os.path.join(self.save_dir, self.filename)
 
     @property
+    def temp_dir(self) -> str:
+        """Single hidden folder holding every temporary artifact of a download."""
+        return os.path.join(self.save_dir, TEMP_DIR_NAME)
+
+    @property
     def temp_path(self) -> str:
-        return self.full_path + ".hdm_part"
+        return os.path.join(self.temp_dir, f"{self.id}.part")
 
     @property
     def meta_path(self) -> str:
+        return os.path.join(self.temp_dir, f"{self.id}.meta")
+
+    @property
+    def stream_temp_dir(self) -> str:
+        """Scratch folder for yt-dlp fragments of this task."""
+        return os.path.join(self.temp_dir, f"ytdl_{self.id}")
+
+    @property
+    def legacy_temp_path(self) -> str:
+        """Partial file written beside the target by HDM <= 1.0.0."""
+        return self.full_path + ".hdm_part"
+
+    @property
+    def legacy_meta_path(self) -> str:
         return self.full_path + ".hdm_meta"
 
     @property

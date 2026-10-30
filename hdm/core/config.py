@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict
 
 from hdm.utils.i18n import normalize_language, set_language
-from hdm.utils.system import get_app_data_folder, get_default_downloads_folder
+from hdm.utils.system import get_app_data_folder, get_default_downloads_folder, resolve_download_dir
 
 
 DEFAULT_USER_AGENT = (
@@ -26,7 +26,6 @@ class Config:
     max_concurrent_tasks: int = 3
     default_connections: int = 8
     min_chunk_size: int = 1048576       # 1 MB
-    min_steal_size: int = 2097152       # 2 MB minimum to split in half
     server_enabled: bool = True
     server_port: int = 9618
     auto_start: bool = True
@@ -63,6 +62,9 @@ class ConfigManager:
                 with open(self.config_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     cfg = Config.from_dict(data)
+                    # A config copied from another machine may point at a drive
+                    # that does not exist here; never keep an unusable save dir.
+                    cfg.default_save_dir = resolve_download_dir(cfg.default_save_dir)
                     set_language(cfg.language)
                     from hdm.utils.category import set_custom_category_extensions, set_custom_category_folders
                     set_custom_category_extensions(cfg.category_extensions)
@@ -81,6 +83,7 @@ class ConfigManager:
     def save(self, config: Config | None = None) -> None:
         if config is not None:
             self.config = config
+        self.config.default_save_dir = resolve_download_dir(self.config.default_save_dir)
         set_language(self.config.language)
         try:
             from hdm.utils.category import set_custom_category_extensions, set_custom_category_folders

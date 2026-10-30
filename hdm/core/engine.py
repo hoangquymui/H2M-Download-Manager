@@ -1,5 +1,6 @@
 """HDM Download Engine.
-High-performance asynchronous multi-connection downloading with Dynamic Segmentation (Work Stealing).
+High-performance asynchronous multi-connection downloading with a fixed
+segment count per task (one segment per configured connection).
 """
 
 from __future__ import annotations
@@ -30,7 +31,6 @@ from hdm.utils.formatters import extract_filename_from_url
 logger = logging.getLogger("HDM.Engine")
 
 MIN_CHUNK_SIZE = 1048576       # 1 MB
-MIN_STEAL_SIZE = 2097152       # 2 MB minimum remaining to split in half
 READ_BUFFER_SIZE = 262144      # 256 KB read buffer for high-speed streaming
 MAX_CHUNK_RETRIES = 8          # Retries with exponential backoff before failing
 
@@ -365,7 +365,7 @@ async def verify_file_checksum(file_path: str, expected_hash: str, algorithm: st
 
 
 class DownloadEngine:
-    """Core download engine handling dynamic segmentation, streaming, and resume."""
+    """Core download engine handling fixed-connection chunking, streaming, and resume."""
 
     def __init__(
         self,
@@ -373,14 +373,12 @@ class DownloadEngine:
         on_progress: Optional[Callable[[DownloadTask], None]] = None,
         on_chunk_update: Optional[Callable[[DownloadTask], None]] = None,
         min_chunk_size: int = MIN_CHUNK_SIZE,
-        min_steal_size: int = MIN_STEAL_SIZE,
         speed_limit_kbps: int = 0,
     ) -> None:
         self.task = task
         self.on_progress = on_progress
         self.on_chunk_update = on_chunk_update
         self.min_chunk_size = max(65536, min_chunk_size or MIN_CHUNK_SIZE)
-        self.min_steal_size = max(131072, min_steal_size or MIN_STEAL_SIZE)
         self.speed_limit_kbps = max(0, speed_limit_kbps or 0)
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -585,6 +583,49 @@ class DownloadEngine:
             logger.warning(f"Failed to load metadata: {e}")
         return False
 
+    def _prepare_temp_dir(self) -> bool:
+        """Create the hidden temp folder that holds every partial artifact."""
+        try:
+            os.makedirs(self.task.temp_dir, exist_ok=True)
+            return True
+        except OSError as e:
+            self.task.status = TaskStatus.ERROR
+            self.task.error_message = f"Không thể tạo thư mục tạm: {e}"
+            if self.on_progress:
+                self.on_progress(self.task)
+            return False
+
+    def _migrate_legacy_temp(self) -> None:
+        """Move partial files from the old beside-the-target layout into .hdm_tmp."""
+        for legacy, current in (
+            (self.task.legacy_temp_path, self.task.temp_path),
+            (self.task.legacy_meta_path, self.task.meta_path),
+        ):
+            if os.path.exists(legacy) and not os.path.exists(current):
+                try:
+                    os.replace(legacy, current)
+                except OSError as e:
+                    logger.debug(f"Legacy temp migration skipped for {legacy}: {e}")
+
+    def _cleanup_temp_files(self, keep_partial: bool) -> None:
+        """Remove temp artifacts; the shared folder disappears when it is empty."""
+        paths = [self.task.meta_path]
+        if not keep_partial:
+            paths.append(self.task.temp_path)
+            shutil.rmtree(self.task.stream_temp_dir, ignore_errors=True)
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        if not keep_partial:
+            try:
+                os.rmdir(self.task.temp_dir)
+            except OSError:
+                pass
+
     async def _inline_hls_keys(self, manifest: str, workdir: str) -> str:
         """Point AES-128 key URIs at local copies fetched with the session.
 
@@ -654,6 +695,7 @@ class DownloadEngine:
 
         try:
             os.makedirs(self.task.save_dir, exist_ok=True)
+            os.makedirs(self.task.stream_temp_dir, exist_ok=True)
         except Exception as e:
             self.task.status = TaskStatus.ERROR
             self.task.error_message = f"Không thể tạo thư mục lưu: {e}"
@@ -770,6 +812,7 @@ class DownloadEngine:
         ydl_opts = {
             "format": format_spec,
             "outtmpl": out_pattern,
+            "paths": {"temp": self.task.stream_temp_dir},
             "progress_hooks": [progress_hook],
             "postprocessor_hooks": [postprocessor_hook],
             "concurrent_fragment_downloads": num_conns,
@@ -915,6 +958,8 @@ class DownloadEngine:
             return False
         finally:
             cleanup_manifest()
+            # Paused streams keep their fragments so Resume can continue them.
+            self._cleanup_temp_files(keep_partial=self.task.status == TaskStatus.PAUSED)
 
     async def run(self) -> bool:
         """Execute the download process."""
@@ -968,6 +1013,10 @@ class DownloadEngine:
                 if self.on_progress:
                     self.on_progress(self.task)
                 return False
+
+            if not self._prepare_temp_dir():
+                return False
+            self._migrate_legacy_temp()
 
             # 2. Initialize chunks or load from saved metadata
             if self.task.supports_range and self.task.total_bytes > 0:
@@ -1032,8 +1081,13 @@ class DownloadEngine:
             speed_task = asyncio.create_task(self._speed_monitor())
 
             try:
-                # 5. Launch worker tasks with Dynamic Segmentation (Work Stealing)
-                num_workers = len(self.task.chunks) if self.task.supports_range else 1
+                # 5. Launch worker tasks. Never open more connections than the
+                # task asked for, even when resumed metadata holds extra chunks.
+                num_workers = (
+                    min(self.task.num_connections, len(self.task.chunks))
+                    if self.task.supports_range else 1
+                )
+                num_workers = max(1, num_workers)
                 workers = [
                     asyncio.create_task(self._worker(client, worker_id=i + 1))
                     for i in range(num_workers)
@@ -1057,16 +1111,7 @@ class DownloadEngine:
             if self._cancel_requested.is_set():
                 self.task.status = TaskStatus.CANCELLED
                 self.task.speed = 0.0
-                if os.path.exists(self.task.temp_path):
-                    try:
-                        os.remove(self.task.temp_path)
-                    except Exception:
-                        pass
-                if os.path.exists(self.task.meta_path):
-                    try:
-                        os.remove(self.task.meta_path)
-                    except Exception:
-                        pass
+                self._cleanup_temp_files(keep_partial=False)
                 return False
 
             if self._pause_requested.is_set():
@@ -1097,14 +1142,11 @@ class DownloadEngine:
                     self.task.total_bytes = sum(c.downloaded_bytes for c in self.task.chunks)
                 self.task.downloaded_bytes = self.task.total_bytes
 
-                # Clean up .hdm_meta file
-                if os.path.exists(self.task.meta_path):
-                    try:
-                        os.remove(self.task.meta_path)
-                    except Exception:
-                        pass
+                # Resume metadata is no longer needed; the partial file is kept
+                # for the (same-volume) atomic rename below.
+                self._cleanup_temp_files(keep_partial=True)
 
-                # Move .hdm_part to final file
+                # Move .part to final file
                 try:
                     if os.path.exists(self.task.full_path):
                         os.remove(self.task.full_path)
@@ -1113,6 +1155,12 @@ class DownloadEngine:
                     self.task.error_message = f"Lỗi hoàn tất tệp: {e}"
                     self.task.status = TaskStatus.ERROR
                     return False
+
+                # Drop the shared temp folder when no other task is using it.
+                try:
+                    os.rmdir(self.task.temp_dir)
+                except OSError:
+                    pass
 
                 # Optional automatic checksum verification
                 checksum = getattr(self.task, "checksum", "") or ""
@@ -1150,7 +1198,11 @@ class DownloadEngine:
                     self.on_progress(self.task)
 
     async def _worker(self, client: httpx.AsyncClient, worker_id: int) -> None:
-        """Worker coroutine that claims pending chunks or steals work from bottleneck chunks."""
+        """Worker coroutine that claims pending chunks until none are left.
+
+        The chunk list is fixed before the workers start, so the number of
+        concurrent connections never exceeds the configured limit.
+        """
         idle_retries = 0
         while not (
             self._pause_requested.is_set()
@@ -1160,18 +1212,14 @@ class DownloadEngine:
             # 1. Claim a pending chunk
             chunk = await self._get_pending_chunk()
 
-            # 2. If no pending chunk, attempt Dynamic Segmentation (Work Stealing)
-            if not chunk and self.task.supports_range:
-                chunk = await self._steal_chunk()
-
-            # 3. If no chunk available right now
+            # 2. If no chunk available right now
             if not chunk:
                 async with self._chunks_lock:
                     all_done = all(c.status == "completed" for c in self.task.chunks)
                 if all_done:
                     break
 
-                # Wait briefly in case an active chunk slows down and needs assistance
+                # Wait briefly: another worker may be retrying a failed chunk
                 idle_retries += 1
                 if idle_retries > 6:
                     break
@@ -1179,7 +1227,7 @@ class DownloadEngine:
                 continue
 
             idle_retries = 0
-            # 4. Download this chunk
+            # 3. Download this chunk
             await self._download_chunk(client, chunk)
 
     async def _get_pending_chunk(self) -> Optional[Chunk]:
@@ -1199,51 +1247,6 @@ class DownloadEngine:
                     c.status = "downloading"
                     return c
         return None
-
-    async def _steal_chunk(self) -> Optional[Chunk]:
-        """Dynamic Segmentation: Steal half of the work from the bottleneck chunk
-        (the chunk with the longest Estimated Time Remaining).
-        """
-        async with self._chunks_lock:
-            active_chunks = [
-                c for c in self.task.chunks
-                if c.status == "downloading" and c.remaining_bytes >= self.min_steal_size
-            ]
-            if not active_chunks:
-                return None
-
-            # Pick bottleneck chunk based on Estimated Time Remaining
-            def chunk_etr(c: Chunk) -> float:
-                effective_speed = max(c.speed, 2048.0)
-                return c.remaining_bytes / effective_speed
-
-            target = max(active_chunks, key=chunk_etr)
-            remaining = target.remaining_bytes
-            half = remaining // 2
-
-            split_point = target.current_pos + half
-
-            new_chunk = Chunk(
-                chunk_id=len(self.task.chunks) + 1,
-                start_byte=split_point,
-                end_byte=target.end_byte,
-                current_pos=split_point,
-                status="downloading",
-            )
-            # Shorten the target chunk
-            target.end_byte = split_point - 1
-            self.task.chunks.append(new_chunk)
-
-            logger.info(
-                f"[Work Stealing] Worker split chunk {target.chunk_id}: "
-                f"new chunk {new_chunk.chunk_id} [{new_chunk.start_byte}-{new_chunk.end_byte}] "
-                f"(ETR bottleneck: {chunk_etr(target):.1f}s)"
-            )
-
-            if self.on_chunk_update:
-                self.on_chunk_update(self.task)
-
-            return new_chunk
 
     def _register_failure(self, chunk: Chunk, reason: str) -> None:
         """Mark chunk failed; after MAX_CHUNK_RETRIES the whole task becomes ERROR."""

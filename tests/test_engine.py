@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hdm.core.engine import DownloadEngine
 from hdm.core.models import DownloadTask, TaskStatus
 
-TEST_DATA = b"HDM_TEST_PAYLOAD_" * 100000  # ~1.7 MB of test data
+TEST_DATA = b"HDM_TEST_PAYLOAD_" * 1000000  # ~17 MB, enough for 4 chunks
 
 
 class RangeTestHandler(BaseHTTPRequestHandler):
@@ -91,6 +91,14 @@ async def run_engine_test():
 
         final_path = os.path.join(td, "sample_payload.bin")
         assert os.path.exists(final_path), "Target file was not created!"
+
+        # Every temporary artifact lives in one hidden folder that is removed
+        # once the download completes.
+        assert not os.path.exists(os.path.join(td, ".hdm_tmp")), "Temp folder left behind!"
+        # The chunk list is fixed up front: no dynamic segment splitting means
+        # the thread count never grows past the configured value.
+        assert len(task.chunks) <= task.num_connections, "More chunks than connections!"
+        assert not chunk_updates or max(chunk_updates) == len(task.chunks)
 
         with open(final_path, "rb") as f:
             downloaded_bytes = f.read()

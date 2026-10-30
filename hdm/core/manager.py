@@ -8,6 +8,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import shutil
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -17,7 +19,7 @@ from hdm.core.engine import DownloadEngine, is_streaming_url
 from hdm.core.models import DownloadTask, TaskStatus
 from hdm.utils.category import FileCategory, get_category_for_filename, get_category_subfolder
 from hdm.utils.formatters import clean_filename, extract_filename_from_url, get_unique_filename
-from hdm.utils.system import get_app_data_folder
+from hdm.utils.system import get_app_data_folder, resolve_download_dir
 
 logger = logging.getLogger("HDM.Manager")
 
@@ -83,7 +85,6 @@ class DownloadQueueManager:
             on_progress=self._handle_task_progress,
             on_chunk_update=self._handle_chunk_update,
             min_chunk_size=getattr(self.config, "min_chunk_size", 1048576),
-            min_steal_size=getattr(self.config, "min_steal_size", 2097152),
             speed_limit_kbps=getattr(self.config, "speed_limit_kbps", 0),
         )
         self.active_engines[task.id] = engine
@@ -151,12 +152,13 @@ class DownloadQueueManager:
             final_category = get_category_for_filename(filename)
 
         if not save_dir:
-            save_dir = self.config.default_save_dir
+            save_dir = resolve_download_dir(self.config.default_save_dir)
             if self.config.auto_categorize:
                 save_dir = get_category_subfolder(final_category, save_dir)
 
         os.makedirs(save_dir, exist_ok=True)
         filename = get_unique_filename(save_dir, filename)
+        filename = self._avoid_active_name(save_dir, filename)
 
         if not connections or connections <= 0:
             connections = self.config.default_connections
@@ -185,6 +187,25 @@ class DownloadQueueManager:
             self.start_task(task.id)
 
         return task
+
+    def _avoid_active_name(self, save_dir: str, filename: str) -> str:
+        """In-flight downloads keep their partial data in .hdm_tmp, not beside the
+        target, so an identical name would only collide at completion time."""
+        target_dir = os.path.normcase(os.path.abspath(save_dir))
+        busy = {
+            os.path.normcase(t.filename)
+            for t in self.tasks.values()
+            if t.status not in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+            and os.path.normcase(os.path.abspath(t.save_dir)) == target_dir
+        }
+        if os.path.normcase(filename) not in busy:
+            return filename
+        stem, ext = os.path.splitext(filename)
+        stem = re.sub(r"\s*\(\d+\)$", "", stem)
+        counter = 1
+        while os.path.normcase(f"{stem} ({counter}){ext}") in busy:
+            counter += 1
+        return f"{stem} ({counter}){ext}"
 
     def start_task(self, task_id: str) -> bool:
         """Set task status to QUEUED so scheduler picks it up."""
@@ -260,6 +281,9 @@ class DownloadQueueManager:
                 task.full_path,
                 task.temp_path,
                 task.meta_path,
+                task.stream_temp_dir,
+                task.legacy_temp_path,
+                task.legacy_meta_path,
                 f"{task.full_path}.crdownload",
                 f"{task.full_path}.part",
             ]
@@ -267,7 +291,7 @@ class DownloadQueueManager:
             # while the engine releases its file handle.
             threading.Thread(
                 target=self._delete_files_with_retry,
-                args=(paths_to_delete,),
+                args=(paths_to_delete, task.temp_dir),
                 daemon=True,
             ).start()
 
@@ -279,19 +303,27 @@ class DownloadQueueManager:
         return True
 
     @staticmethod
-    def _delete_files_with_retry(paths: List[str]) -> None:
+    def _delete_files_with_retry(paths: List[str], temp_dir: str = "") -> None:
         time.sleep(0.15)  # Let the engine release its file handle
         for path in paths:
             for attempt in range(5):
                 if not os.path.exists(path):
                     break
                 try:
-                    os.remove(path)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path, ignore_errors=False)
+                    else:
+                        os.remove(path)
                     logger.info(f"Deleted file from disk: {path}")
                     break
                 except Exception as e:
                     logger.warning(f"Failed attempt {attempt + 1} deleting {path}: {e}")
                     time.sleep(0.1)
+        if temp_dir:
+            try:
+                os.rmdir(temp_dir)  # Only succeeds when no other task uses it
+            except OSError:
+                pass
 
     def get_total_speed(self) -> float:
         """Calculate aggregate download speed across all active tasks."""
