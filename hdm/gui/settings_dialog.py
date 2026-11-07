@@ -20,6 +20,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -29,10 +32,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hdm.core.config import ConfigManager
+from hdm.core.config import ConfigManager, normalize_proxy_url, normalize_schedule_time
 from hdm.gui.style import apply_theme, normalize_theme
 from hdm.utils.category import CATEGORY_CONFIG_SPECS
 from hdm.utils.i18n import normalize_language, set_language, tr
+from hdm.utils.secrets import protect_secret, unprotect_secret
+from hdm.utils.site_auth import normalize_site_pattern
 
 
 class SettingsDialog(QDialog):
@@ -46,9 +51,17 @@ class SettingsDialog(QDialog):
         self._original_lang = normalize_language(self.config.language)
         self.category_inputs: Dict[str, QLineEdit] = {}
         self.folder_inputs: Dict[str, QLineEdit] = {}
+        self.site_entries: Dict[str, Dict[str, str]] = {}
+        for pattern, entry in (self.config.site_credentials or {}).items():
+            if not isinstance(entry, dict):
+                continue
+            self.site_entries[str(pattern)] = {
+                "username": str(entry.get("username") or ""),
+                "password": unprotect_secret(str(entry.get("password") or "")),
+            }
 
         self.setWindowTitle(tr("settings_dialog_title"))
-        self.setMinimumWidth(720)
+        self.setMinimumWidth(760)
         self.setMinimumHeight(600)
         self.resize(800, 840)
         self.setModal(True)
@@ -70,8 +83,9 @@ class SettingsDialog(QDialog):
         self.nav_btn_group = QButtonGroup(self)
         tab_specs = [
             (0, tr("settings_tab_storage")),
-            (1, tr("settings_tab_browser")),
-            (2, tr("settings_tab_appearance")),
+            (1, tr("settings_tab_auth")),
+            (2, tr("settings_tab_browser")),
+            (3, tr("settings_tab_appearance")),
         ]
         self.nav_buttons = []
         for idx, title in tab_specs:
@@ -93,6 +107,7 @@ class SettingsDialog(QDialog):
         self.stacked_pages = QStackedWidget(self)
         self.stacked_pages.setObjectName("settings_stack")
         self.stacked_pages.addWidget(self._build_storage_page())
+        self.stacked_pages.addWidget(self._build_auth_page())
         self.stacked_pages.addWidget(self._build_browser_page())
         self.stacked_pages.addWidget(self._build_appearance_page())
         self.nav_btn_group.idClicked.connect(self.stacked_pages.setCurrentIndex)
@@ -183,7 +198,37 @@ class SettingsDialog(QDialog):
 
         page_layout.addWidget(grp_storage)
 
-        # 2. Category & File Extensions GroupBox
+        # 2. Download Schedule GroupBox
+        grp_schedule = QGroupBox(tr("settings_grp_schedule"), container)
+        grid_schedule = QGridLayout(grp_schedule)
+        grid_schedule.setSpacing(8)
+
+        self.chk_schedule = QCheckBox(tr("settings_chk_schedule"), grp_schedule)
+        self.chk_schedule.setChecked(getattr(self.config, "schedule_enabled", False))
+        grid_schedule.addWidget(self.chk_schedule, 0, 0, 1, 4)
+
+        grid_schedule.addWidget(QLabel(tr("settings_schedule_start")), 1, 0)
+        self.schedule_start_input = QLineEdit(grp_schedule)
+        self.schedule_start_input.setText(getattr(self.config, "schedule_start", ""))
+        self.schedule_start_input.setPlaceholderText(tr("settings_schedule_placeholder"))
+        self.schedule_start_input.setMaximumWidth(220)
+        grid_schedule.addWidget(self.schedule_start_input, 1, 1)
+
+        grid_schedule.addWidget(QLabel(tr("settings_schedule_stop")), 1, 2)
+        self.schedule_stop_input = QLineEdit(grp_schedule)
+        self.schedule_stop_input.setText(getattr(self.config, "schedule_stop", ""))
+        self.schedule_stop_input.setPlaceholderText(tr("settings_schedule_placeholder"))
+        self.schedule_stop_input.setMaximumWidth(220)
+        grid_schedule.addWidget(self.schedule_stop_input, 1, 3)
+
+        schedule_hint = QLabel(tr("settings_schedule_hint"), grp_schedule)
+        schedule_hint.setObjectName("settings_hint")
+        schedule_hint.setWordWrap(True)
+        grid_schedule.addWidget(schedule_hint, 2, 0, 1, 4)
+
+        page_layout.addWidget(grp_schedule)
+
+        # 3. Category & File Extensions GroupBox
         grp_categories = QGroupBox(tr("settings_grp_categories"), container)
         cat_layout = QVBoxLayout(grp_categories)
         cat_layout.setSpacing(6)
@@ -280,11 +325,137 @@ class SettingsDialog(QDialog):
         scroll.setWidget(container)
         return scroll
 
+    def _build_auth_page(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(4, 6, 4, 6)
+        page_layout.setSpacing(12)
+
+        grp_auth = QGroupBox(tr("settings_grp_auth"), page)
+        grid_auth = QGridLayout(grp_auth)
+        grid_auth.setSpacing(8)
+
+        grid_auth.addWidget(QLabel(tr("settings_auth_host")), 0, 0)
+        self.auth_host_input = QLineEdit(grp_auth)
+        self.auth_host_input.setPlaceholderText(tr("settings_auth_host_placeholder"))
+        grid_auth.addWidget(self.auth_host_input, 0, 1, 1, 3)
+
+        grid_auth.addWidget(QLabel(tr("settings_auth_user")), 1, 0)
+        self.auth_username_input = QLineEdit(grp_auth)
+        grid_auth.addWidget(self.auth_username_input, 1, 1, 1, 3)
+
+        grid_auth.addWidget(QLabel(tr("settings_auth_password")), 2, 0)
+        self.auth_password_input = QLineEdit(grp_auth)
+        self.auth_password_input.setEchoMode(QLineEdit.Password)
+        grid_auth.addWidget(self.auth_password_input, 2, 1, 1, 3)
+
+        auth_buttons = QHBoxLayout()
+        btn_auth_add = QPushButton(tr("settings_auth_add"), grp_auth)
+        btn_auth_add.clicked.connect(self._on_auth_add_clicked)
+        btn_auth_delete = QPushButton(tr("settings_auth_delete"), grp_auth)
+        btn_auth_delete.setObjectName("btn_secondary")
+        btn_auth_delete.clicked.connect(self._on_auth_delete_clicked)
+        auth_buttons.addWidget(btn_auth_add)
+        auth_buttons.addWidget(btn_auth_delete)
+        auth_buttons.addStretch()
+        grid_auth.addLayout(auth_buttons, 3, 0, 1, 4)
+
+        self.auth_list = QListWidget(grp_auth)
+        self.auth_list.setMinimumHeight(170)
+        self.auth_list.itemSelectionChanged.connect(self._on_auth_selected)
+        grid_auth.addWidget(self.auth_list, 4, 0, 1, 4)
+
+        auth_hint = QLabel(tr("settings_auth_hint"), grp_auth)
+        auth_hint.setObjectName("settings_hint")
+        auth_hint.setWordWrap(True)
+        grid_auth.addWidget(auth_hint, 5, 0, 1, 4)
+
+        page_layout.addWidget(grp_auth)
+        page_layout.addStretch()
+        self._refresh_auth_list()
+        return page
+
+    def _refresh_auth_list(self, select: str = "") -> None:
+        self.auth_list.blockSignals(True)
+        self.auth_list.clear()
+        for pattern in sorted(self.site_entries):
+            entry = self.site_entries[pattern]
+            item = QListWidgetItem(f"{pattern}   —   {entry['username']}")
+            item.setData(Qt.UserRole, pattern)
+            self.auth_list.addItem(item)
+            if pattern == select:
+                self.auth_list.setCurrentItem(item)
+        self.auth_list.blockSignals(False)
+
+    def _on_auth_selected(self) -> None:
+        item = self.auth_list.currentItem()
+        if item is None:
+            return
+        pattern = str(item.data(Qt.UserRole) or "")
+        entry = self.site_entries.get(pattern)
+        if not entry:
+            return
+        self.auth_host_input.setText(pattern)
+        self.auth_username_input.setText(entry["username"])
+        self.auth_password_input.setText(entry["password"])
+
+    def _on_auth_add_clicked(self) -> None:
+        try:
+            pattern = normalize_site_pattern(self.auth_host_input.text())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                tr("settings_auth_invalid_title"),
+                tr("settings_auth_invalid_host"),
+            )
+            self.auth_host_input.setFocus()
+            return
+        username = self.auth_username_input.text().strip()
+        password = self.auth_password_input.text()
+        if not username or not password:
+            QMessageBox.warning(
+                self,
+                tr("settings_auth_invalid_title"),
+                tr("settings_auth_missing"),
+            )
+            return
+        self.site_entries[pattern] = {"username": username, "password": password}
+        self.auth_host_input.setText(pattern)
+        self._refresh_auth_list(select=pattern)
+
+    def _on_auth_delete_clicked(self) -> None:
+        item = self.auth_list.currentItem()
+        if item is None:
+            return
+        pattern = str(item.data(Qt.UserRole) or "")
+        self.site_entries.pop(pattern, None)
+        self.auth_host_input.clear()
+        self.auth_username_input.clear()
+        self.auth_password_input.clear()
+        self._refresh_auth_list()
+
     def _build_browser_page(self) -> QWidget:
         page = QWidget()
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(4, 6, 4, 6)
         page_layout.setSpacing(12)
+
+        grp_proxy = QGroupBox(tr("settings_grp_proxy"), page)
+        grid_proxy = QGridLayout(grp_proxy)
+        grid_proxy.setSpacing(10)
+
+        grid_proxy.addWidget(QLabel(tr("settings_proxy_label")), 0, 0)
+        self.proxy_input = QLineEdit(grp_proxy)
+        self.proxy_input.setText(getattr(self.config, "proxy_url", ""))
+        self.proxy_input.setPlaceholderText(tr("settings_proxy_placeholder"))
+        grid_proxy.addWidget(self.proxy_input, 0, 1)
+
+        proxy_hint = QLabel(tr("settings_proxy_hint"), grp_proxy)
+        proxy_hint.setObjectName("settings_hint")
+        proxy_hint.setWordWrap(True)
+        grid_proxy.addWidget(proxy_hint, 1, 0, 1, 2)
+
+        page_layout.addWidget(grp_proxy)
 
         grp_browser = QGroupBox(tr("settings_grp_browser"), page)
         grid_browser = QGridLayout(grp_browser)
@@ -390,10 +561,66 @@ class SettingsDialog(QDialog):
                 self.folder_inputs[key].setText(str(spec["default_folder"]))
 
     def _on_save_clicked(self) -> None:
+        try:
+            proxy_url = normalize_proxy_url(self.proxy_input.text())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                tr("settings_proxy_invalid_title"),
+                tr("settings_proxy_invalid_msg"),
+            )
+            self.proxy_input.setFocus()
+            return
+
+        try:
+            schedule_start = normalize_schedule_time(self.schedule_start_input.text())
+            schedule_stop = normalize_schedule_time(self.schedule_stop_input.text())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                tr("settings_schedule_invalid_title"),
+                tr("settings_schedule_invalid_msg"),
+            )
+            return
+        schedule_enabled = self.chk_schedule.isChecked()
+        if schedule_enabled and not schedule_start and not schedule_stop:
+            QMessageBox.warning(
+                self,
+                tr("settings_schedule_invalid_title"),
+                tr("settings_schedule_empty_msg"),
+            )
+            self.schedule_start_input.setFocus()
+            return
+
+        try:
+            encrypted_sites = {
+                pattern: {
+                    "username": entry["username"],
+                    "password": protect_secret(entry["password"]),
+                }
+                for pattern, entry in self.site_entries.items()
+                if entry["username"] and entry["password"]
+            }
+        except RuntimeError:
+            QMessageBox.warning(
+                self,
+                tr("settings_auth_encrypt_title"),
+                tr("settings_auth_encrypt_msg"),
+            )
+            return
+
         self.config.default_save_dir = self.dir_input.text().strip()
         self.config.default_connections = self.conn_spin.value()
         self.config.max_concurrent_tasks = self.max_tasks_spin.value()
         self.config.speed_limit_kbps = self.speed_spin.value()
+        self.config.proxy_url = proxy_url
+        self.proxy_input.setText(proxy_url)
+        self.config.schedule_enabled = schedule_enabled
+        self.config.schedule_start = schedule_start
+        self.config.schedule_stop = schedule_stop
+        self.schedule_start_input.setText(schedule_start)
+        self.schedule_stop_input.setText(schedule_stop)
+        self.config.site_credentials = encrypted_sites
         self.config.server_port = self.port_spin.value()
         self.config.auto_categorize = self.chk_categorize.isChecked()
         self.config.server_enabled = self.chk_server.isChecked()

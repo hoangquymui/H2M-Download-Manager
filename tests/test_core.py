@@ -11,7 +11,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from hdm.core.config import Config, ConfigManager
+from hdm.core.config import Config, ConfigManager, normalize_proxy_url
 from hdm.core.engine import _needs_browser_headers, _stream_format_spec, is_streaming_url
 from hdm.core.models import Chunk, DownloadTask, TaskStatus
 from hdm.core.sparse_file import preallocate_file
@@ -215,6 +215,100 @@ def test_server_qualities():
     print("✅ test_server_qualities passed!")
 
 
+def test_proxy_config():
+    # Empty value means a direct connection.
+    assert normalize_proxy_url("") == ""
+    assert normalize_proxy_url("   ") == ""
+
+    # A bare host:port is assumed to be HTTP.
+    assert normalize_proxy_url("127.0.0.1:8080") == "http://127.0.0.1:8080"
+    assert normalize_proxy_url("proxy.local:3128") == "http://proxy.local:3128"
+
+    # Credentials and SOCKS schemes survive untouched (trimmed).
+    assert normalize_proxy_url(" http://user:p%40ss@host:3128 ") == "http://user:p%40ss@host:3128"
+    assert normalize_proxy_url("socks5://user:pass@127.0.0.1:1080") == "socks5://user:pass@127.0.0.1:1080"
+    assert normalize_proxy_url("socks5h://127.0.0.1:9050") == "socks5h://127.0.0.1:9050"
+    assert normalize_proxy_url("socks4://127.0.0.1:1080") == "socks4://127.0.0.1:1080"
+
+    for invalid in ("ftp://host:21", "http://", "http://host:99999", "http://host:abc", "socks5://"):
+        try:
+            normalize_proxy_url(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {invalid!r}")
+
+    cfg = Config(proxy_url="socks5://127.0.0.1:1080")
+    restored = Config.from_dict(cfg.to_dict())
+    assert restored.proxy_url == "socks5://127.0.0.1:1080"
+    assert Config.from_dict({"unknown": 1}).proxy_url == ""
+    print("✅ test_proxy_config passed!")
+
+
+def test_secret_storage():
+    from hdm.utils.secrets import protect_secret, unprotect_secret
+
+    token = protect_secret("s3cret-pass")
+    assert token, "encryption produced no token"
+    assert "s3cret-pass" not in token, "ciphertext must not contain the plaintext"
+    assert unprotect_secret(token) == "s3cret-pass"
+    assert protect_secret("") == ""
+    assert unprotect_secret("") == ""
+    assert unprotect_secret("not-a-token") == ""
+    print("✅ test_secret_storage passed!")
+
+
+def test_site_auth():
+    from hdm.utils.secrets import protect_secret
+    from hdm.utils.site_auth import (
+        find_site_credentials,
+        host_matches,
+        normalize_site_pattern,
+        sanitize_site_credentials,
+    )
+
+    assert normalize_site_pattern("https://Example.com:8080/path?q=1") == "example.com"
+    assert normalize_site_pattern("example.com:8080") == "example.com"
+    assert normalize_site_pattern("  *.EXAMPLE.com  ") == "*.example.com"
+    for invalid in ("", "   ", "https://", "bad host", "http://:8080"):
+        try:
+            normalize_site_pattern(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {invalid!r}")
+
+    assert host_matches("example.com", "EXAMPLE.com")
+    assert host_matches("example.com", "example.com.")
+    assert not host_matches("example.com", "cdn.example.com")
+    assert host_matches("*.example.com", "cdn.example.com")
+    assert host_matches("*.example.com", "example.com")
+    assert not host_matches("*.example.com", "badexample.com")
+    assert not host_matches("", "example.com")
+
+    exact = {"username": "alice", "password": protect_secret("s3cret")}
+    wildcard = {"username": "cdn-user", "password": protect_secret("cdn-pass")}
+    entries = {"example.com": exact, "*.example.com": wildcard}
+
+    assert find_site_credentials(entries, "https://example.com/file.zip") == ("alice", "s3cret")
+    assert find_site_credentials(entries, "https://files.example.com/a.bin") == ("cdn-user", "cdn-pass")
+    assert find_site_credentials(entries, "https://example.org/a.bin") is None
+    assert find_site_credentials({}, "https://example.com/a.bin") is None
+
+    cleaned = sanitize_site_credentials(
+        {
+            "https://Example.com/x": {"username": " u ", "password": "tok"},
+            "bad host": {"username": "u", "password": "tok"},
+            "x": "nope",
+            "empty.example": {"username": "", "password": "tok"},
+        }
+    )
+    assert set(cleaned) == {"example.com"}, cleaned
+    assert cleaned["example.com"]["username"] == "u"
+    assert sanitize_site_credentials(None) == {}
+    print("✅ test_site_auth passed!")
+
+
 def test_sparse_file():
     with tempfile.TemporaryDirectory() as td:
         test_file = os.path.join(td, "sparse_test.bin")
@@ -225,6 +319,98 @@ def test_sparse_file():
     print("✅ test_sparse_file passed!")
 
 
+def test_schedule_window():
+    from hdm.core.config import normalize_schedule_time
+    from hdm.core.manager import is_within_window
+
+    assert normalize_schedule_time("") == ""
+    assert normalize_schedule_time(" 8:05 ") == "08:05"
+    assert normalize_schedule_time("23:59") == "23:59"
+    for bad in ("24:00", "12:60", "7", "abc", "12:5", "-1:00"):
+        try:
+            normalize_schedule_time(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(bad)
+
+    # No bounds, or a single bound, still allow the open side.
+    assert is_within_window(600, None, None) is True
+    assert is_within_window(600, 480, None) is True
+    assert is_within_window(400, 480, None) is False
+    assert is_within_window(400, None, 480) is True
+    assert is_within_window(600, None, 480) is False
+
+    # Start is inclusive, stop is exclusive.
+    assert is_within_window(480, 480, 720) is True
+    assert is_within_window(720, 480, 720) is False
+
+    # A start later than the stop wraps past midnight.
+    assert is_within_window(23 * 60 + 30, 23 * 60, 6 * 60) is True
+    assert is_within_window(5 * 60, 23 * 60, 6 * 60) is True
+    assert is_within_window(12 * 60, 23 * 60, 6 * 60) is False
+    print("✅ test_schedule_window passed!")
+
+
+def test_schedule_pause_resume():
+    from hdm.core.manager import DownloadQueueManager
+
+    manager = DownloadQueueManager.__new__(DownloadQueueManager)
+    manager.tasks = {}
+    manager.active_engines = {}
+    manager.active_tasks = {}
+    manager.on_task_added = None
+    manager.on_task_updated = None
+    manager.on_task_removed = None
+    manager.save_tasks = lambda: None
+    manager._schedule_paused_ids = set()
+
+    def make(status):
+        task = DownloadTask(
+            url="https://example.com/f.bin",
+            filename="f.bin",
+            save_dir=tempfile.gettempdir(),
+        )
+        task.status = status
+        manager.tasks[task.id] = task
+        return task
+
+    running = make(TaskStatus.DOWNLOADING)
+    queued = make(TaskStatus.QUEUED)
+    user_paused = make(TaskStatus.PAUSED)
+    done = make(TaskStatus.COMPLETED)
+
+    class StubEngine:
+        paused = False
+
+        def pause(self):
+            self.paused = True
+
+        def cancel(self):
+            pass
+
+    engine = StubEngine()
+    manager.active_engines[running.id] = engine
+
+    manager._pause_for_schedule()
+    assert engine.paused is True
+    assert running.status == TaskStatus.PAUSED
+    assert queued.status == TaskStatus.PAUSED
+    # User-paused and completed tasks are neither touched nor tracked.
+    assert user_paused.status == TaskStatus.PAUSED
+    assert done.status == TaskStatus.COMPLETED
+    assert manager._schedule_paused_ids == {running.id, queued.id}
+
+    # A task the user resumed while the window stayed closed must survive the reopen.
+    queued.status = TaskStatus.QUEUED
+    manager._resume_scheduled_tasks()
+    assert running.status == TaskStatus.QUEUED
+    assert queued.status == TaskStatus.QUEUED
+    assert user_paused.status == TaskStatus.PAUSED
+    assert manager._schedule_paused_ids == set()
+    print("✅ test_schedule_pause_resume passed!")
+
+
 if __name__ == "__main__":
     test_formatters()
     test_categories()
@@ -232,5 +418,10 @@ if __name__ == "__main__":
     test_stream_format_spec()
     test_needs_browser_headers()
     test_server_qualities()
+    test_proxy_config()
+    test_secret_storage()
+    test_site_auth()
     test_sparse_file()
+    test_schedule_window()
+    test_schedule_pause_resume()
     print("\n🎉 ALL UNIT TESTS PASSED SUCCESSFULLY!")

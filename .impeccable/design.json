@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T07:54:00Z",
+  "title": "Design System: H2M Download Manager",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Electric Cobalt Blue",
+        "canonical": "#2563EB",
+        "tonalRamp": ["#0F172A", "#172554", "#1E3A8A", "#1D4ED8", "#2563EB", "#3B82F6", "#60A5FA", "#BFDBFE"]
+      },
+      "accent-cyan": {
+        "role": "secondary",
+        "displayName": "Speed Cyan",
+        "canonical": "#06B6D4",
+        "tonalRamp": ["#083344", "#164E63", "#155E75", "#0E7490", "#06B6D4", "#22D3EE", "#67E8F9", "#CFFAFE"]
+      },
+      "neutral-bg": {
+        "role": "neutral",
+        "displayName": "Midnight Slate Void",
+        "canonical": "#0B0F19",
+        "tonalRamp": ["#020617", "#0B0F19", "#0E1526", "#111827", "#131C2E", "#1E293B", "#334155", "#64748B"]
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Emerald Done",
+        "canonical": "#10B981",
+        "tonalRamp": ["#022C22", "#064E3B", "#065F46", "#047857", "#10B981", "#34D399", "#6EE7B7", "#D1FAE5"]
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "Amber Processing",
+        "canonical": "#F59E0B",
+        "tonalRamp": ["#451A03", "#78350F", "#92400E", "#B45309", "#F59E0B", "#FBBF24", "#FCD34D", "#FEF3C7"]
+      },
+      "danger": {
+        "role": "semantic",
+        "displayName": "Ruby Error",
+        "canonical": "#EF4444",
+        "tonalRamp": ["#450A0A", "#7F1D1D", "#991B1B", "#B91C1C", "#EF4444", "#F87171", "#FCA5A5", "#FEE2E2"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Main page header titles." },
+      "headline": { "displayName": "Headline", "purpose": "Brand titles and modal headers." },
+      "title": { "displayName": "Title", "purpose": "Table headers, buttons, and sidebar items." },
+      "body": { "displayName": "Body", "purpose": "Standard table content, paths, and form labels." },
+      "label": { "displayName": "Label", "purpose": "Badges, progress percentages, and status tags." }
+    },
+    "shadows": [
+      {
+        "name": "ambient-modal",
+        "value": "0 12px 36px rgba(0, 0, 0, 0.65)",
+        "purpose": "Ambient drop shadow for modal dialogs and dropdown menus."
+      },
+      {
+        "name": "floating-btn",
+        "value": "0 3px 12px rgba(0, 0, 0, 0.45)",
+        "purpose": "Elevation for the 28px browser extension video download button."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Default curve for button hovers and dropdown reveals."
+      },
+      {
+        "name": "duration-fast",
+        "value": "150ms",
+        "purpose": "Fast hover and state transitions."
+      },
+      {
+        "name": "duration-normal",
+        "value": "200ms",
+        "purpose": "Smooth menu expansions and modal fades."
+      }
+    ],
+    "breakpoints": [
+      { "name": "desktop-min", "value": "1000px" },
+      { "name": "desktop-default", "value": "1240px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary action button for starting downloads or confirming modals.",
+      "html": "<button class=\"ds-btn-primary\">+ Thêm URL</button>",
+      "css": ".ds-btn-primary { background: linear-gradient(90deg, #2563EB, #1D4ED8); color: #FFFFFF; border: 1px solid #2563EB; border-radius: 7px; padding: 7px 16px; font-family: Segoe UI, Inter, sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.18s ease; } .ds-btn-primary:hover { background: linear-gradient(90deg, #3B82F6, #2563EB); border-color: #3B82F6; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Secondary control for pausing, resuming, or opening folders.",
+      "html": "<button class=\"ds-btn-secondary\">Tiếp tục</button>",
+      "css": ".ds-btn-secondary { background: #172238; color: #F1F5F9; border: 1px solid #273552; border-radius: 7px; padding: 7px 16px; font-family: Segoe UI, Inter, sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.18s ease; } .ds-btn-secondary:hover { background: #1E2B45; border-color: #2563EB; color: #60A5FA; }"
+    },
+    {
+      "name": "Input Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Standard text input field for URLs, filenames, and search queries.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Dán liên kết tải tệp tại đây...\" />",
+      "css": ".ds-input { background: #131C2E; color: #F1F5F9; border: 1px solid #273552; border-radius: 7px; padding: 7px 11px; font-family: Segoe UI, Inter, sans-serif; font-size: 13px; outline: none; transition: border-color 0.15s ease; } .ds-input:focus { border-color: #2563EB; background: #172238; }"
+    },
+    {
+      "name": "Table Card Container",
+      "kind": "card",
+      "refersTo": "card-container",
+      "description": "Main card wrapper enclosing the downloads table grid.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-header\">Tên tệp</div></div>",
+      "css": ".ds-card { background: #131C2E; border: 1px solid #1E2B45; border-radius: 8px; padding: 1px; } .ds-card-header { padding: 9px 12px; background: #111827; color: #94A3B8; font-size: 11px; font-weight: 700; border-bottom: 1px solid #1E293B; }"
+    },
+    {
+      "name": "Dynamic Chunk Map Bar",
+      "kind": "custom",
+      "refersTo": "chunk-map",
+      "description": "Multi-threaded byte range segmentation visualizer.",
+      "html": "<div class=\"ds-chunk-bar\"><div class=\"ds-chunk-done\" style=\"width: 45%;\"></div><div class=\"ds-chunk-active\" style=\"width: 25%;\"></div><div class=\"ds-chunk-pending\" style=\"width: 30%;\"></div></div>",
+      "css": ".ds-chunk-bar { display: flex; height: 18px; background: #162035; border-radius: 6px; overflow: hidden; border: 1px solid #222F4D; } .ds-chunk-done { background: linear-gradient(90deg, #10B981, #059669); } .ds-chunk-active { background: linear-gradient(90deg, #2563EB, #06B6D4); } .ds-chunk-pending { background: #162035; }"
+    },
+    {
+      "name": "Extension Download Button",
+      "kind": "custom",
+      "refersTo": "ext-btn",
+      "description": "28px circular floating download button for web video players.",
+      "html": "<div class=\"ds-ext-btn\">⬇</div>",
+      "css": ".ds-ext-btn { width: 28px; height: 28px; border-radius: 50%; background: rgba(15, 23, 42, 0.94); border: 1px solid rgba(255, 255, 255, 0.22); color: #38BDF8; display: flex; align-items: center; justify-content: center; font-size: 14px; cursor: pointer; box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45); transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1); } .ds-ext-btn:hover { transform: scale(1.08); color: #60A5FA; border-color: #38BDF8; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Precision Turbine",
+    "overview": "The visual world of H2M Download Manager (HDM) is engineered around the metaphor of a high-efficiency precision turbine: fast, silent, perfectly balanced, and purpose-built for sustained high-throughput data transfer. It rejects the bloated, banner-strewn, skeuomorphic legacy of Windows 2000s download managers in favor of a clean, dark-slate instrument aesthetic where every pixel directly serves operational speed and readability.\n\nThe atmosphere is composed, technical, and restrained. Surfaces are deep slate tones (#0B0F19 to #131C2E) with subtle ghost borders (#1E2B45). Visual priority belongs exclusively to live data: connection status, real-time segment distribution in the Dynamic Chunk Map, and transfer velocity. Accent highlights use Electric Cobalt Blue (#2563EB) and Speed Cyan (#06B6D4), ensuring users can scan active tasks at a glance without visual fatigue.",
+    "keyCharacteristics": [
+      "Zero Distraction Slate: Dark Slate background with high-contrast text conforming to WCAG AA/AAA.",
+      "Tonal Layering over Drop Shadows: Surfaces are flat at rest; spatial hierarchy is achieved through controlled tone stepping.",
+      "Micro-Engineered Feedback: Vector icons, dynamic progress bars, and high-visibility segment blocks.",
+      "Complete Symmetry across Themes: Both Dark and Light modes share identical layout metrics, typography, and contrast rules."
+    ],
+    "rules": [
+      {
+        "name": "The One Voice Rule",
+        "body": "The primary Cobalt accent (#2563EB) is strictly reserved for primary actions, active chunk streams, and selected sidebar items. It never covers more than 10% of any viewport.",
+        "section": "colors"
+      },
+      {
+        "name": "The Ghost Border Rule",
+        "body": "All internal surface divisions rely on a crisp 1px border (#1E2B45 in dark mode, #E2E8F0 in light mode) rather than heavy shadows or high-contrast drop dividers.",
+        "section": "colors"
+      },
+      {
+        "name": "The Numeric Clarity Rule",
+        "body": "Download speeds (MB/s, KB/s), ETAs, file sizes, and chunk byte ranges are displayed with bold weight and color-coded status, ensuring instant comprehension during active transfers.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "Surfaces are completely flat at rest. Drop shadows appear only as ambient halos on floating menus, browser extension buttons, and modal dialogs.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do maintain identical layouts and component dimensions when switching between Dark and Light mode.",
+      "Do keep the browser extension download button strictly outside the video viewing container on every web surface.",
+      "Do format all transfer speeds and data sizes with standardized units (KB/s, MB/s, GB) and bold typography.",
+      "Do use the 7px border radius for all actionable buttons, inputs, and selection tabs.",
+      "Do use the two-stop gradient (#2563EB to #06B6D4) for active download bars and chunk segments."
+    ],
+    "donts": [
+      "Don't use skeuomorphic 3D bevels, glossy glass gradients, or Windows XP-era icon styling.",
+      "Don't insert promotional banners, notification ads, or extraneous visual widgets into dialogs.",
+      "Don't use heavy drop shadows on static desktop cards or table headers; rely on tonal slate layering.",
+      "Don't position the extension download button inside the video player frame where it could obstruct subtitles or media controls.",
+      "Don't hardcode hex colors in Python GUI widgets; always query get_palette() from style.py."
+    ]
+  }
+}

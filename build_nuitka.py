@@ -67,6 +67,8 @@ def nuitka_command(compiler: str, version: str) -> list:
         "--include-package-data=yt_dlp_ejs",
         "--include-package-data=imageio_ffmpeg",
         "--include-package-data=certifi",
+        # httpx imports socksio lazily; keep SOCKS proxies working in the build.
+        "--include-package=socksio",
         # yt-dlp probes installed distributions (notably yt-dlp-ejs) by metadata.
         "--include-distribution-metadata=yt-dlp",
         "--include-distribution-metadata=yt-dlp-ejs",

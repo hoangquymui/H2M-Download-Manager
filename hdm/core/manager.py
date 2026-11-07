@@ -12,6 +12,7 @@ import re
 import shutil
 import threading
 import time
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from hdm.core.config import ConfigManager
@@ -19,9 +20,42 @@ from hdm.core.engine import DownloadEngine, is_streaming_url
 from hdm.core.models import DownloadTask, TaskStatus
 from hdm.utils.category import FileCategory, get_category_for_filename, get_category_subfolder
 from hdm.utils.formatters import clean_filename, extract_filename_from_url, get_unique_filename
+from hdm.utils.site_auth import find_site_credentials
 from hdm.utils.system import get_app_data_folder, resolve_download_dir
 
 logger = logging.getLogger("HDM.Manager")
+
+
+def _parse_clock(value: str) -> Optional[int]:
+    """Parse "HH:MM" into minutes since midnight; None when unset/invalid."""
+    try:
+        hour_text, minute_text = str(value).strip().split(":")
+        hour, minute = int(hour_text), int(minute_text)
+    except (AttributeError, ValueError):
+        return None
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        return None
+    return hour * 60 + minute
+
+
+def is_within_window(
+    now_minutes: int,
+    start: Optional[int],
+    stop: Optional[int],
+) -> bool:
+    """True when *now* falls inside the daily window (start inclusive, stop exclusive).
+
+    A window whose start is later than its stop crosses midnight.
+    """
+    if start is None and stop is None:
+        return True
+    if start is not None and stop is not None:
+        if start <= stop:
+            return start <= now_minutes < stop
+        return now_minutes >= start or now_minutes < stop
+    if start is not None:
+        return now_minutes >= start
+    return now_minutes < stop
 
 
 class DownloadQueueManager:
@@ -46,8 +80,41 @@ class DownloadQueueManager:
         self._loop_task: Optional[asyncio.Task[None]] = None
         self._lock = asyncio.Lock()
         self._save_lock = threading.Lock()
+        self._schedule_allowed = self._schedule_allows_now()
+        self._schedule_paused_ids: set[str] = set()
 
         self.load_tasks()
+
+    def _schedule_allows_now(self) -> bool:
+        """True when the configured daily download window is open."""
+        if not getattr(self.config, "schedule_enabled", False):
+            return True
+        now = datetime.now()
+        return is_within_window(
+            now.hour * 60 + now.minute,
+            _parse_clock(getattr(self.config, "schedule_start", "")),
+            _parse_clock(getattr(self.config, "schedule_stop", "")),
+        )
+
+    def _pause_for_schedule(self) -> None:
+        """Pause everything that would otherwise run until the window reopens."""
+        active_statuses = (
+            TaskStatus.QUEUED,
+            TaskStatus.CONNECTING,
+            TaskStatus.DOWNLOADING,
+            TaskStatus.PROCESSING,
+        )
+        for task in list(self.tasks.values()):
+            if task.status in active_statuses and self.pause_task(task.id):
+                self._schedule_paused_ids.add(task.id)
+
+    def _resume_scheduled_tasks(self) -> None:
+        """Resume only the tasks the scheduler paused, never user-paused ones."""
+        for task_id in list(self._schedule_paused_ids):
+            task = self.tasks.get(task_id)
+            if task is not None and task.status == TaskStatus.PAUSED:
+                self.start_task(task_id)
+        self._schedule_paused_ids.clear()
 
     def start_scheduler(self) -> None:
         """Start the background queue scheduler."""
@@ -55,9 +122,20 @@ class DownloadQueueManager:
             self._loop_task = asyncio.create_task(self._scheduler_loop())
 
     async def _scheduler_loop(self) -> None:
-        """Scheduler that starts QUEUED tasks when concurrent slots are available."""
+        """Start QUEUED tasks while slots and the daily schedule window allow it."""
         while self._queue_running:
             await asyncio.sleep(0.5)
+            allowed = self._schedule_allows_now()
+            if allowed != self._schedule_allowed:
+                self._schedule_allowed = allowed
+                if allowed:
+                    logger.info("Schedule window opened; resuming downloads")
+                    self._resume_scheduled_tasks()
+                else:
+                    logger.info("Schedule window closed; pausing downloads")
+                    self._pause_for_schedule()
+            if not allowed:
+                continue
             async with self._lock:
                 # Snapshot: the GUI thread may add/remove tasks concurrently.
                 tasks = list(self.tasks.values())
@@ -86,6 +164,10 @@ class DownloadQueueManager:
             on_chunk_update=self._handle_chunk_update,
             min_chunk_size=getattr(self.config, "min_chunk_size", 1048576),
             speed_limit_kbps=getattr(self.config, "speed_limit_kbps", 0),
+            proxy_url=getattr(self.config, "proxy_url", ""),
+            credentials=find_site_credentials(
+                getattr(self.config, "site_credentials", {}), task.url
+            ),
         )
         self.active_engines[task.id] = engine
 

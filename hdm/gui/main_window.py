@@ -53,22 +53,22 @@ from hdm.utils.system import get_app_icon, launch_file, open_file_in_explorer, o
 
 from hdm.utils.i18n import get_category_display, get_language, get_status_display, tr
 
-STATUS_FILTER_SPECS = [
-    ("all", ""),
-    ("status_downloading", "⚡"),
-    ("status_completed", "✅"),
-    ("status_paused", "⏸"),
-    ("status_error", "❌"),
+STATUS_FILTER_CODES = [
+    "all",
+    "status_downloading",
+    "status_completed",
+    "status_paused",
+    "status_error",
 ]
 
-CATEGORY_FILTER_SPECS = [
-    ("cat_video", "🎬"),
-    ("cat_audio", "🎵"),
-    ("cat_compressed", "📦"),
-    ("cat_docs", "📄"),
-    ("cat_programs", "💻"),
-    ("cat_images", "🖼"),
-    ("cat_others", "📂"),
+CATEGORY_FILTER_CODES = [
+    "cat_video",
+    "cat_audio",
+    "cat_compressed",
+    "cat_docs",
+    "cat_programs",
+    "cat_images",
+    "cat_others",
 ]
 
 FILTER_KEY_MAP = {
@@ -86,8 +86,6 @@ FILTER_KEY_MAP = {
     "cat_others": "cat_others",
 }
 
-FILTER_EMOJIS = {code: emoji for code, emoji in STATUS_FILTER_SPECS + CATEGORY_FILTER_SPECS}
-
 
 def get_filter_title(code: str) -> str:
     key = FILTER_KEY_MAP.get(code)
@@ -95,11 +93,9 @@ def get_filter_title(code: str) -> str:
 
 
 def sidebar_label(code: str, count: Optional[int] = None) -> str:
-    """Build the display text of a sidebar entry, optionally with a live counter."""
-    emoji = FILTER_EMOJIS.get(code, "")
+    """Build the clean display text of a sidebar entry, optionally with a live counter."""
     title = get_filter_title(code)
-    text = f"  {emoji} {title}" if emoji else f"  {title}"
-    return f"{text} ({count})" if count is not None else text
+    return f"{title} ({count})" if count is not None else title
 
 
 def build_status_colors() -> Dict[TaskStatus, str]:
@@ -389,6 +385,7 @@ class MainWindow(QMainWindow):
         self.table.customContextMenuRequested.connect(self._show_context_menu)
         self.table.doubleClicked.connect(self._on_table_double_clicked)
         self.table.itemChanged.connect(self._on_table_item_changed)
+        self.table.itemSelectionChanged.connect(self._update_action_states)
 
         card_layout.addWidget(self.table)
         layout.addWidget(card, 1)
@@ -431,11 +428,11 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> None:
         self.sidebar.clear()
         self._add_sidebar_header(tr("sidebar_header_status"))
-        for code, _emoji in STATUS_FILTER_SPECS:
+        for code in STATUS_FILTER_CODES:
             self._add_sidebar_item(code)
 
         self._add_sidebar_header(tr("sidebar_header_category"))
-        for code, _emoji in CATEGORY_FILTER_SPECS:
+        for code in CATEGORY_FILTER_CODES:
             self._add_sidebar_item(code)
 
         self._update_sidebar_counts()
@@ -597,7 +594,8 @@ class MainWindow(QMainWindow):
         self.search_input = QLineEdit(self)
         self.search_input.setObjectName("search_input")
         self.search_input.setPlaceholderText(tr("toolbar_search_placeholder"))
-        self.search_input.setFixedWidth(230)
+        self.search_input.setMinimumWidth(140)
+        self.search_input.setMaximumWidth(200)
         self.search_input.setFixedHeight(30)
         self.search_input.setClearButtonEnabled(True)
         self.search_input.textChanged.connect(self._on_search_changed)
@@ -612,6 +610,7 @@ class MainWindow(QMainWindow):
         self.btn_theme.clicked.connect(self.toggle_theme)
         toolbar.addWidget(self.btn_theme)
         self._sync_theme_button()
+        self._update_action_states()
 
     # ------------------------------------------------------------------
     # Theme handling
@@ -670,9 +669,36 @@ class MainWindow(QMainWindow):
             self.page_subtitle.setText(
                 tr("page_search_results", count=visible, query=self.search_query, total=total)
             )
+            self.page_subtitle.show()
         else:
-            self.page_subtitle.setText(tr("page_files_summary", count=visible, total=total))
-        self.page_badge.setText(tr("page_badge_downloading", count=self.manager.get_active_count()))
+            self.page_subtitle.hide()
+
+        active_count = self.manager.get_active_count()
+        if active_count > 0:
+            self.page_badge.setText(tr("page_badge_downloading", count=active_count))
+            self.page_badge.show()
+        else:
+            self.page_badge.hide()
+
+    def _update_action_states(self) -> None:
+        """Dynamically enable or disable toolbar actions depending on selected task state."""
+        if not hasattr(self, "btn_resume_action"):
+            return
+        task = self._get_selected_task()
+
+        if task is None:
+            self.btn_resume_action.setEnabled(False)
+            self.btn_pause_action.setEnabled(False)
+            self.btn_delete_action.setEnabled(False)
+            return
+
+        can_resume = task.status in (TaskStatus.PAUSED, TaskStatus.ERROR, TaskStatus.CANCELLED)
+        self.btn_resume_action.setEnabled(can_resume)
+
+        can_pause = task.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.QUEUED)
+        self.btn_pause_action.setEnabled(can_pause)
+
+        self.btn_delete_action.setEnabled(True)
 
     def _sync_empty_state(self) -> None:
         """Show the friendly placeholder only when the table has no rows."""
@@ -1156,6 +1182,7 @@ class MainWindow(QMainWindow):
 
         self._update_sidebar_counts()
         self._sync_empty_state()
+        self._update_action_states()
         if getattr(self, "batch_mode_active", False):
             self._update_batch_count()
 
@@ -1166,8 +1193,14 @@ class MainWindow(QMainWindow):
         total_count = len(self.manager.tasks)
 
         self.lbl_speed_summary.setText(tr("status_speed", speed=format_speed(total_speed)))
-        self.lbl_tasks_summary.setText(f"📊 {active_count} {tr('sidebar_status_downloading').lower()} / {total_count}")
+        if active_count > 0:
+            self.lbl_tasks_summary.setText(
+                f"{active_count} {tr('sidebar_status_downloading').lower()} • {tr('status_tasks_count', count=total_count)}"
+            )
+        else:
+            self.lbl_tasks_summary.setText(tr("status_tasks_count", count=total_count))
         self._update_page_header()
+        self._update_action_states()
 
         colors = self.palette_colors
         bold_font = QFont()
@@ -1282,32 +1315,38 @@ class MainWindow(QMainWindow):
             return
 
         menu = QMenu(self)
+        text_color = self.palette_colors.get("text", "#F1F5F9")
 
-        act_detail = menu.addAction(f"🔍 {tr('ctx_view_details')}")
+        act_detail = menu.addAction(tr("ctx_view_details"))
+        act_detail.setIcon(get_icon("settings", text_color, size=16))
         act_detail.triggered.connect(lambda: DownloadDetailDialog(task, parent=self).exec())
 
         menu.addSeparator()
 
         if task.status in (TaskStatus.PAUSED, TaskStatus.ERROR, TaskStatus.CANCELLED):
-            act_resume = menu.addAction(f"▶ {tr('ctx_resume')}")
+            act_resume = menu.addAction(tr("ctx_resume"))
+            act_resume.setIcon(get_icon("resume", text_color, size=16))
             act_resume.triggered.connect(lambda: self.manager.start_task(task.id))
         elif task.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.QUEUED):
-            act_pause = menu.addAction(f"❚❚ {tr('ctx_pause')}")
+            act_pause = menu.addAction(tr("ctx_pause"))
+            act_pause.setIcon(get_icon("pause", text_color, size=16))
             act_pause.triggered.connect(lambda: self.manager.pause_task(task.id))
 
         if task.status == TaskStatus.COMPLETED:
             act_open_file = menu.addAction(tr("ctx_open_file"))
             act_open_file.triggered.connect(lambda: self._open_task_file(task))
 
-        act_open_dir = menu.addAction(f"📁 {tr('ctx_open_folder')}")
+        act_open_dir = menu.addAction(tr("ctx_open_folder"))
+        act_open_dir.setIcon(get_icon("folder", text_color, size=16))
         act_open_dir.triggered.connect(lambda: open_file_in_explorer(task.full_path))
 
-        act_copy_url = menu.addAction(f"📋 {tr('ctx_copy_link')}")
+        act_copy_url = menu.addAction(tr("ctx_copy_link"))
         act_copy_url.triggered.connect(lambda: QApplication.clipboard().setText(task.url))
 
         menu.addSeparator()
 
-        act_del_file = menu.addAction(f"🗑 {tr('ctx_delete')}")
+        act_del_file = menu.addAction(tr("ctx_delete"))
+        act_del_file.setIcon(get_icon("delete", text_color, size=16))
         act_del_file.triggered.connect(lambda: self._confirm_delete(task, delete_file=True))
 
         menu.exec(QCursor.pos())

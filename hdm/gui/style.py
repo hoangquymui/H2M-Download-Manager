@@ -291,13 +291,13 @@ QToolBar, QToolBar#main_toolbar {
     background-color: $toolbar_bg;
     border: none;
     border-bottom: 1px solid $divider;
-    spacing: 6px;
-    padding: 5px 12px;
+    spacing: 5px;
+    padding: 5px 10px;
 }
 QToolBar::separator, QToolBar#main_toolbar::separator {
     width: 1px;
     background-color: $border;
-    margin: 4px 6px;
+    margin: 4px 5px;
 }
 
 QToolButton {
@@ -305,7 +305,7 @@ QToolButton {
     color: $text;
     border: 1px solid $button_border;
     border-radius: 7px;
-    padding: 5px 12px;
+    padding: 5px 10px;
     font-weight: 600;
     font-size: 12px;
 }
@@ -330,7 +330,7 @@ QToolButton#btn_primary_add {
     color: $accent_text;
     border: 1px solid $accent;
     border-radius: 7px;
-    padding: 5px 16px;
+    padding: 5px 14px;
     font-weight: 700;
 }
 QToolButton#btn_primary_add:hover {
@@ -418,11 +418,11 @@ QListWidget#sidebar {
 }
 QListWidget#sidebar::item {
     padding: 8px 12px;
-    border-radius: 7px;
-    margin: 1px 2px;
+    border-radius: 6px;
+    margin: 1px 4px;
     color: $text_muted;
     font-size: 13px;
-    border-left: 3px solid transparent;
+    border: none;
 }
 QListWidget#sidebar::item:hover {
     background-color: $sidebar_hover;
@@ -432,14 +432,14 @@ QListWidget#sidebar::item:selected {
     background-color: $sidebar_sel_bg;
     color: $sidebar_sel_text;
     font-weight: 600;
-    border-left: 3px solid $sidebar_sel_border;
+    border: none;
 }
 QListWidget#sidebar::item:disabled {
     background: transparent;
     color: $text_faint;
     padding: 12px 12px 4px 12px;
     margin: 0;
-    border-left: 3px solid transparent;
+    border: none;
     letter-spacing: 0.8px;
 }
 

@@ -124,6 +124,24 @@ def _needs_browser_headers(url: str) -> bool:
     return not any(host == d or host.endswith("." + d) for d in NO_BROWSER_HEADER_DOMAINS)
 
 
+class HostScopedBasicAuth(httpx.Auth):
+    """HTTP Basic auth attached only to requests for one exact host.
+
+    HLS keys and segments often live on CDN hosts, so a client-wide auth would
+    leak the site password to those hosts.
+    """
+
+    def __init__(self, host: str, username: str, password: str) -> None:
+        self.host = (host or "").lower()
+        self._basic = httpx.BasicAuth(username, password)
+
+    def auth_flow(self, request: httpx.Request):
+        if self.host and (request.url.host or "").lower() == self.host:
+            yield from self._basic.auth_flow(request)
+        else:
+            yield request
+
+
 def _is_placeholder_filename(name: str) -> bool:
     """True when a filename carries no real name (empty, generic, no extension).
 
@@ -374,12 +392,16 @@ class DownloadEngine:
         on_chunk_update: Optional[Callable[[DownloadTask], None]] = None,
         min_chunk_size: int = MIN_CHUNK_SIZE,
         speed_limit_kbps: int = 0,
+        proxy_url: str = "",
+        credentials: Optional[Tuple[str, str]] = None,
     ) -> None:
         self.task = task
         self.on_progress = on_progress
         self.on_chunk_update = on_chunk_update
         self.min_chunk_size = max(65536, min_chunk_size or MIN_CHUNK_SIZE)
         self.speed_limit_kbps = max(0, speed_limit_kbps or 0)
+        self.proxy_url = (proxy_url or "").strip()
+        self.credentials = credentials
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pause_requested = asyncio.Event()
@@ -416,6 +438,18 @@ class DownloadEngine:
         self.task.url = new_url
         logger.info(f"Task {self.task.id} updated with refreshed URL: {new_url}")
 
+    def _site_auth(self) -> Optional[HostScopedBasicAuth]:
+        """Basic auth scoped to the task's current host, when credentials exist."""
+        if not self.credentials:
+            return None
+        try:
+            host = (urlparse(self.task.url).hostname or "").lower()
+        except ValueError:
+            return None
+        if not host:
+            return None
+        return HostScopedBasicAuth(host, self.credentials[0], self.credentials[1])
+
     async def probe(self, client: httpx.AsyncClient) -> bool:
         """Inspect the URL with HEAD / GET Range probe, or yt_dlp for streaming video."""
         self.task.status = TaskStatus.CONNECTING
@@ -437,6 +471,10 @@ class DownloadEngine:
                     }
                     if self.task.headers:
                         ydl_opts["http_headers"] = dict(self.task.headers)
+                    if self.proxy_url:
+                        ydl_opts["proxy"] = self.proxy_url
+                    if self.credentials:
+                        ydl_opts["username"], ydl_opts["password"] = self.credentials
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         return ydl.extract_info(self.task.url, download=False)
 
@@ -640,6 +678,8 @@ class DownloadEngine:
             timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=30.0),
             follow_redirects=True,
             headers=headers,
+            proxy=self.proxy_url or None,
+            auth=self._site_auth(),
         ) as client:
             for line in manifest.splitlines():
                 if not line.startswith("#EXT-X-KEY") or "METHOD=AES-128" not in line.upper():
@@ -827,6 +867,10 @@ class DownloadEngine:
         }
         if self.speed_limit_kbps > 0:
             ydl_opts["ratelimit"] = self.speed_limit_kbps * 1024
+        if self.proxy_url:
+            ydl_opts["proxy"] = self.proxy_url
+        if self.credentials:
+            ydl_opts["username"], ydl_opts["password"] = self.credentials
 
         runtimes = _js_runtimes()
         if runtimes:
@@ -981,6 +1025,8 @@ class DownloadEngine:
             headers=default_headers,
             follow_redirects=True,
             http2=True,
+            proxy=self.proxy_url or None,
+            auth=self._site_auth(),
         ) as client:
             # 1. Probe server metadata if not yet known
             if self.task.total_bytes <= 0:
