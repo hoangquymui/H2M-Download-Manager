@@ -7,7 +7,10 @@ and three clear actions: [Start Download], [Download Later], and [Cancel].
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Optional
+import shutil
+import tempfile
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 from PySide6.QtCore import Qt, QThread, Signal
@@ -28,13 +31,21 @@ from PySide6.QtWidgets import (
 )
 
 from hdm.core.config import Config
-from hdm.core.engine import is_streaming_url
+from hdm.core.engine import (
+    HostScopedBasicAuth,
+    _js_runtimes,
+    _needs_browser_headers,
+    _write_cookiefile,
+    is_streaming_domain,
+    is_streaming_url,
+)
 from hdm.core.sparse_file import check_free_space
 from hdm.gui.icons import get_icon
 from hdm.gui.style import get_palette
 from hdm.utils.category import FileCategory, get_category_for_filename, get_category_subfolder
 from hdm.utils.formatters import extract_filename_from_url, format_bytes, get_unique_filename
 from hdm.utils.i18n import get_category_display, tr
+from hdm.utils.site_auth import find_site_credentials
 
 # Keep active probe threads referenced so they are never GC'd while running
 _ACTIVE_PROBE_WORKERS: set[ProbeWorker] = set()
@@ -50,14 +61,30 @@ class ProbeWorker(QThread):
         url: str,
         user_agent: str,
         custom_headers: Optional[Dict[str, str]] = None,
+        proxy_url: str = "",
+        credentials: Optional[Tuple[str, str]] = None,
     ) -> None:
         super().__init__()
         self.url = url
         self.user_agent = user_agent
         self.custom_headers = custom_headers or {}
+        self.proxy_url = (proxy_url or "").strip()
+        self.credentials = credentials
+
+    def _site_auth(self) -> Optional[HostScopedBasicAuth]:
+        if not self.credentials:
+            return None
+        try:
+            host = (urlparse(self.url).hostname or "").lower()
+        except ValueError:
+            return None
+        if not host:
+            return None
+        return HostScopedBasicAuth(host, self.credentials[0], self.credentials[1])
 
     def run(self) -> None:
         if is_streaming_url(self.url):
+            cookie_dir = ""
             try:
                 import yt_dlp
                 from hdm.utils.formatters import clean_filename
@@ -69,68 +96,117 @@ class ProbeWorker(QThread):
                     "nocheckcertificate": True,
                     "noplaylist": True,
                 }
-                if self.custom_headers:
+                if self.proxy_url:
+                    ydl_opts["proxy"] = self.proxy_url
+                if self.credentials:
+                    ydl_opts["username"], ydl_opts["password"] = self.credentials
+                runtimes = _js_runtimes()
+                if runtimes:
+                    ydl_opts["js_runtimes"] = runtimes
+                if self.custom_headers and _needs_browser_headers(self.url):
                     probe_headers = dict(self.custom_headers)
-                    probe_headers.pop("Cookie", None)
-                    probe_headers.pop("cookie", None)
+                    cookie_header = probe_headers.pop("Cookie", "") or probe_headers.pop("cookie", "")
+                    if cookie_header:
+                        cookie_dir = tempfile.mkdtemp(prefix="hdm_probe_cookies_")
+                        cookie_path = os.path.join(cookie_dir, "cookies.txt")
+                        if _write_cookiefile(cookie_path, cookie_header, self.url, ""):
+                            ydl_opts["cookiefile"] = cookie_path
                     if probe_headers:
                         ydl_opts["http_headers"] = probe_headers
+
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(self.url, download=False)
-                    title = info.get("title", "")
+                    title = (info or {}).get("title", "")
                     clean_t = clean_filename(title) if title else "video"
-                    ext = info.get("ext", "mp4")
+                    ext = (info or {}).get("ext", "mp4")
                     if ext in ("webm", "mkv", "unknown_video"):
                         ext = "mp4"
                     filename = f"{clean_t}.{ext}"
-                    total_bytes = info.get("filesize") or info.get("filesize_approx") or -1
+                    total_bytes = (info or {}).get("filesize") or (info or {}).get("filesize_approx") or -1
                     self.finished_signal.emit(filename, total_bytes, True)
                     return
             except Exception as e:
-                # Fallback to standard HTTP probe if yt-dlp probe fails
-                pass
+                if is_streaming_domain(self.url):
+                    self.error_signal.emit(str(e))
+                    return
+                # Non-domain manifest URLs (.m3u8/.mpd) may still answer a direct HTTP probe.
+            finally:
+                if cookie_dir:
+                    shutil.rmtree(cookie_dir, ignore_errors=True)
 
         try:
             headers = {"User-Agent": self.user_agent}
             headers.update(self.custom_headers)
             headers.setdefault("Accept-Encoding", "identity")
-            with httpx.Client(follow_redirects=True, timeout=12.0, headers={"Accept-Encoding": "identity"}) as client:
+            with httpx.Client(
+                follow_redirects=True,
+                timeout=12.0,
+                headers={"Accept-Encoding": "identity"},
+                proxy=self.proxy_url or None,
+                auth=self._site_auth(),
+            ) as client:
+                head_resp = None
                 try:
-                    resp = client.head(self.url, headers=headers)
+                    head_resp = client.head(self.url, headers=headers)
+                    if head_resp.status_code not in (200, 206):
+                        head_resp = None
                 except Exception:
-                    resp = None
-                # Many servers reject HEAD (405/403 or reset) while GET works, so
-                # a failed HEAD must fall back to a one-byte ranged GET.
-                if resp is None or resp.status_code not in (200, 206):
+                    head_resp = None
+
+                # Many servers reject HEAD (405/403/reset) or omit Content-Length on HEAD.
+                # Stream the ranged GET so a server returning 200 OK never loads into RAM.
+                if head_resp is not None:
+                    resp_url = str(head_resp.url)
+                    resp_headers = head_resp.headers
+                    resp_status = head_resp.status_code
+                else:
+                    resp_url = self.url
+                    resp_headers = None
+                    resp_status = 0
+
+                head_cl = -1
+                if resp_headers is not None:
+                    cl_val = resp_headers.get("x-identity-content-length") or resp_headers.get("content-length")
+                    if cl_val and cl_val.isdigit():
+                        head_cl = int(cl_val)
+
+                total_bytes = head_cl
+                supports_range = bool(
+                    resp_headers is not None
+                    and resp_headers.get("accept-ranges", "").lower() == "bytes"
+                )
+                cd = resp_headers.get("content-disposition", "") if resp_headers is not None else ""
+
+                if head_resp is None or head_cl <= 0:
                     range_headers = dict(headers)
                     range_headers["Range"] = "bytes=0-0"
-                    resp = client.get(self.url, headers=range_headers)
-                    if resp.status_code >= 400:
-                        self.error_signal.emit(f"HTTP {resp.status_code}")
-                        return
+                    with client.stream("GET", self.url, headers=range_headers) as get_resp:
+                        if get_resp.status_code >= 400:
+                            if head_resp is None:
+                                self.error_signal.emit(f"HTTP {get_resp.status_code}")
+                                return
+                        else:
+                            resp_url = str(get_resp.url)
+                            cd = get_resp.headers.get("content-disposition", "") or cd
+                            if get_resp.status_code == 206:
+                                supports_range = True
+                                content_range = get_resp.headers.get("content-range", "")
+                                if "/" in content_range:
+                                    total_str = content_range.rsplit("/", 1)[1].strip()
+                                    if total_str.isdigit():
+                                        total_bytes = int(total_str)
+                            elif get_resp.status_code == 200:
+                                supports_range = supports_range or (
+                                    get_resp.headers.get("accept-ranges", "").lower() == "bytes"
+                                )
+                                cl = (
+                                    get_resp.headers.get("x-identity-content-length")
+                                    or get_resp.headers.get("content-length")
+                                )
+                                if cl and cl.isdigit():
+                                    total_bytes = int(cl)
 
-                total_bytes = -1
-                if resp.status_code == 206:
-                    content_range = resp.headers.get("content-range", "")
-                    if "/" in content_range:
-                        total_str = content_range.rsplit("/", 1)[1]
-                        if total_str.isdigit():
-                            total_bytes = int(total_str)
-                if total_bytes <= 0:
-                    cl = resp.headers.get("x-identity-content-length") or resp.headers.get("content-length")
-                    if cl:
-                        try:
-                            total_bytes = int(cl)
-                        except ValueError:
-                            pass
-
-                supports_range = (
-                    resp.headers.get("accept-ranges", "").lower() == "bytes" or
-                    resp.status_code == 206
-                )
-                cd = resp.headers.get("content-disposition", "")
-                filename = extract_filename_from_url(str(resp.url), cd)
-
+                filename = extract_filename_from_url(resp_url, cd)
                 self.finished_signal.emit(filename, total_bytes, supports_range)
         except Exception as e:
             self.error_signal.emit(str(e))
@@ -195,8 +271,9 @@ class DownloadConfirmDialog(QDialog):
             self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
 
         self._init_ui()
-        # Folder auto-categorize wrote last; a differing value means the user chose it.
+        # Folder/filename auto-tracking; differing values mean the user edited them.
         self._auto_dir = self.config.default_save_dir
+        self._auto_filename = ""
 
         if self._captured_qualities:
             self._populate_captured_qualities()
@@ -225,6 +302,7 @@ class DownloadConfirmDialog(QDialog):
         if self.initial_filename:
             self._sync_category_from_filename(self.initial_filename)
             unique_init = get_unique_filename(self.dir_input.text().strip(), self.initial_filename)
+            self._auto_filename = unique_init
             self.filename_input.setText(unique_init)
 
         if self.initial_url:
@@ -373,13 +451,13 @@ class DownloadConfirmDialog(QDialog):
 
         self.btn_download_later = QPushButton(f"⏸  {tr('confirm_btn_download_later')}", self)
         self.btn_download_later.setObjectName("btn_secondary")
-        self.btn_download_later.setToolTip("Thêm vào danh sách tải ở trạng thái Tạm dừng (tải sau)")
+        self.btn_download_later.setToolTip(tr("confirm_later_tip"))
         self.btn_download_later.clicked.connect(self._on_download_later)
         btn_row.addWidget(self.btn_download_later)
 
         self.btn_download_now = QPushButton(f"⬇  {tr('confirm_btn_start_now')}", self)
         self.btn_download_now.setDefault(True)
-        self.btn_download_now.setToolTip("Bắt đầu tải tệp ngay lập tức (Nhấn Enter)")
+        self.btn_download_now.setToolTip(tr("confirm_start_tip"))
         self.btn_download_now.clicked.connect(self._on_download_now)
         btn_row.addWidget(self.btn_download_now)
 
@@ -422,8 +500,10 @@ class DownloadConfirmDialog(QDialog):
 
     def _on_url_changed(self, text: str) -> None:
         url = text.strip()
-        if url and not self.filename_input.text():
+        curr_fn = self.filename_input.text().strip()
+        if url and (not curr_fn or curr_fn == self._auto_filename or self._is_placeholder_filename(curr_fn)):
             fn = extract_filename_from_url(url)
+            self._auto_filename = fn
             self.filename_input.setText(fn)
             self._sync_category_from_filename(fn)
 
@@ -537,12 +617,8 @@ class DownloadConfirmDialog(QDialog):
         )
         extra = ""
         if self._captured_qualities:
-            extra = f" — {len(self._captured_qualities)} mức chất lượng khả dụng"
-        self.info_label.setText(
-            "✓ Đã bắt được luồng HLS từ trình duyệt (m3u8)"
-            + extra
-            + " — sẵn sàng tải, không cần kiểm tra URL."
-        )
+            extra = tr("add_manifest_qualities", count=len(self._captured_qualities))
+        self.info_label.setText(tr("add_manifest_ready", extra=extra))
         self.info_label.setStyleSheet(f"color: {colors['success']}; font-weight: 600; font-size: 11px;")
 
     def _on_probe_clicked(self) -> None:
@@ -550,7 +626,7 @@ class DownloadConfirmDialog(QDialog):
         if not url:
             return
 
-        if self.initial_manifest:
+        if self.initial_manifest and url == self.initial_url:
             self._show_manifest_ready()
             return
 
@@ -566,12 +642,19 @@ class DownloadConfirmDialog(QDialog):
         self.info_label.setText(f"⏳ {tr('add_btn_checking')}")
         self.info_label.setStyleSheet(f"color: {colors['info']}; font-weight: 500;")
 
-        worker = ProbeWorker(url, self.config.user_agent, self.custom_headers)
+        creds = find_site_credentials(getattr(self.config, "site_credentials", {}), url)
+        worker = ProbeWorker(
+            url,
+            self.config.user_agent,
+            self.custom_headers,
+            proxy_url=getattr(self.config, "proxy_url", ""),
+            credentials=creds,
+        )
         self.probe_worker = worker
         _ACTIVE_PROBE_WORKERS.add(worker)
         worker.finished_signal.connect(self._on_probe_finished)
         worker.error_signal.connect(self._on_probe_error)
-        worker.finished.connect(lambda: _ACTIVE_PROBE_WORKERS.discard(worker))
+        worker.finished.connect(lambda w=worker: _ACTIVE_PROBE_WORKERS.discard(w))
         worker.start()
 
     @staticmethod
@@ -580,18 +663,23 @@ class DownloadConfirmDialog(QDialog):
         base = os.path.basename(name or "").strip()
         if not base:
             return True
-        if base.lower() in ("watch", "watch.html", "index.html", "download", "videoplayback"):
+        if base.lower() in (
+            "watch", "watch.html", "index.html", "download", "videoplayback",
+            "shorts", "embed", "video",
+        ):
             return True
         # Signed CDNs often suggest an opaque UUID with no extension while the
         # real name is only present in the URL.
         return not os.path.splitext(base)[1]
 
     def _on_probe_finished(self, filename: str, total_bytes: int, supports_range: bool) -> None:
+        if self.sender() is not None and self.sender() is not self.probe_worker:
+            return
         self.btn_probe.setEnabled(True)
         self.btn_probe.setText(tr("add_btn_check"))
 
         curr_text = self.filename_input.text().strip()
-        is_generic = self._is_placeholder_filename(curr_text)
+        is_generic = self._is_placeholder_filename(curr_text) or (curr_text == self._auto_filename)
         is_probe_generic = filename.lower() in ("index.mp4", "master.mp4", "video.mp4", "playlist.mp4", "index", "master")
         if curr_text and not is_generic and is_probe_generic:
             filename = curr_text
@@ -612,9 +700,10 @@ class DownloadConfirmDialog(QDialog):
                 filename = f"{name_root}.mp4"
             self._sync_category_from_filename(filename)
             unique_fn = get_unique_filename(self.dir_input.text().strip(), filename)
+            self._auto_filename = unique_fn
             self.filename_input.setText(unique_fn)
 
-        size_text = format_bytes(total_bytes) if total_bytes > 0 else "Không rõ kích thước"
+        size_text = format_bytes(total_bytes) if total_bytes > 0 else tr("add_size_unknown")
         range_text = tr("add_range_yes") if supports_range else tr("add_range_no")
 
         has_space, free_bytes, _ = check_free_space(self.dir_input.text(), total_bytes)
@@ -628,8 +717,7 @@ class DownloadConfirmDialog(QDialog):
                 f" border: 1px solid {colors['danger_border']}; border-radius: 6px;"
             )
             self.info_label.setText(
-                f"📦 Dung lượng: {size_text}  •  {range_text}\n"
-                f"⚠️ {space_str} (Không đủ dung lượng tải!)"
+                tr("add_probe_insufficient_space", size=size_text, range=range_text, space=space_str)
             )
             self.info_label.setStyleSheet(
                 f"color: {colors['danger']}; font-weight: 700; font-size: 11px;"
@@ -645,6 +733,8 @@ class DownloadConfirmDialog(QDialog):
             )
 
     def _on_probe_error(self, err_msg: str) -> None:
+        if self.sender() is not None and self.sender() is not self.probe_worker:
+            return
         self.btn_probe.setEnabled(True)
         self.btn_probe.setText(tr("add_btn_check"))
         self.info_box.setVisible(True)
@@ -667,7 +757,7 @@ class DownloadConfirmDialog(QDialog):
 
     def _validate_inputs(self) -> bool:
         url = self.url_input.text().strip()
-        if not url or not (url.startswith("http://") or url.startswith("https://")):
+        if not url or not url.lower().startswith(("http://", "https://")):
             QMessageBox.warning(self, tr("table_status"), tr("add_err_invalid_url"))
             return False
 

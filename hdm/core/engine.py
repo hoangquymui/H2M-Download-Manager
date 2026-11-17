@@ -26,13 +26,14 @@ import httpx
 
 from hdm.core.models import Chunk, DownloadTask, TaskStatus
 from hdm.core.sparse_file import preallocate_file
-from hdm.utils.formatters import extract_filename_from_url
+from hdm.utils.formatters import clean_filename, extract_filename_from_url, get_unique_filename
 
 logger = logging.getLogger("HDM.Engine")
 
 MIN_CHUNK_SIZE = 1048576       # 1 MB
 READ_BUFFER_SIZE = 262144      # 256 KB read buffer for high-speed streaming
 MAX_CHUNK_RETRIES = 8          # Retries with exponential backoff before failing
+PERMANENT_HTTP_ERRORS = (401, 403, 404, 410, 451)
 
 STREAMING_DOMAINS = (
     "youtube.com",
@@ -63,6 +64,29 @@ STREAMING_DOMAINS = (
 )
 
 
+def is_streaming_domain(url: str) -> bool:
+    """True when the URL host belongs to a known video/audio streaming platform."""
+    if not url:
+        return False
+    value = url.strip().lower()
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    if parsed.scheme == "file":
+        return False
+    if not parsed.netloc:
+        try:
+            parsed = urlparse(f"https://{value.lstrip('/')}")
+        except ValueError:
+            return False
+    host = (parsed.hostname or "").strip(".")
+    for domain in STREAMING_DOMAINS:
+        if host == domain or host.endswith("." + domain):
+            return True
+    return False
+
+
 def is_streaming_url(url: str) -> bool:
     """Check if the URL belongs to a streaming service or manifests supported by yt-dlp.
 
@@ -88,17 +112,13 @@ def is_streaming_url(url: str) -> bool:
         except ValueError:
             return False
 
-    host = (parsed.hostname or "").strip(".")
     path = parsed.path or ""
     if ".m3u8" in path or ".mpd" in path:
         return True
     if ".m3u8" in (parsed.query or "") or ".mpd" in (parsed.query or ""):
         return True
 
-    for domain in STREAMING_DOMAINS:
-        if host == domain or host.endswith("." + domain):
-            return True
-    return False
+    return is_streaming_domain(url)
 
 
 HEIGHT_QUALITIES = ("1080", "720", "480", "360", "240", "144")
@@ -151,7 +171,10 @@ def _is_placeholder_filename(name: str) -> bool:
     base = os.path.basename((name or "").strip())
     if not base:
         return True
-    if base.lower() in ("watch", "watch.html", "index.html", "download", "videoplayback"):
+    if base.lower() in (
+        "watch", "watch.html", "index.html", "download", "videoplayback",
+        "shorts", "embed", "video",
+    ):
         return True
     return not os.path.splitext(base)[1]
 
@@ -297,10 +320,12 @@ class AsyncBatchDiskWriter:
         await self.queue.put((offset, data))
 
     async def truncate(self, size: int = 0) -> None:
-        """Truncate the file at a specific size (used for non-range stream retries)."""
+        """Drain pending writes, then truncate the file at a specific size."""
         if self._handle and not self._write_error:
+            await self.queue.join()
             self._handle.seek(size)
             self._handle.truncate(size)
+            self._handle.flush()
 
     async def _worker_loop(self) -> None:
         """Background loop reading from queue and writing directly to disk."""
@@ -413,6 +438,24 @@ class DownloadEngine:
         self._fail_counts: Dict[int, int] = {}
         self._last_speed_check_time = time.time()
         self._last_downloaded_bytes = 0
+        self._rate_next_time: float = 0.0
+
+    async def _apply_speed_limit(self, byte_count: int) -> None:
+        """Throttle total throughput across all workers using shared pacing."""
+        if self.speed_limit_kbps <= 0 or byte_count <= 0:
+            return
+        limit_bps = self.speed_limit_kbps * 1024.0
+        now = time.monotonic()
+        if self._rate_next_time < now - 0.5:
+            self._rate_next_time = now
+        target_time = self._rate_next_time + (byte_count / limit_bps)
+        self._rate_next_time = target_time
+        delay = target_time - now
+        while delay > 0.005:
+            if self._pause_requested.is_set() or self._cancel_requested.is_set():
+                return
+            await asyncio.sleep(min(delay, 0.1))
+            delay = target_time - time.monotonic()
 
     def _signal_from_any_thread(self, event: asyncio.Event) -> None:
         """Set an asyncio.Event safely even when called from the Qt GUI thread."""
@@ -483,15 +526,24 @@ class DownloadEngine:
                     title = info.get("title", "")
                     from hdm.utils.formatters import clean_filename
                     ext = info.get("ext", "mp4")
-                    if not self.task.filename or self.task.filename.startswith("watch"):
+                    if not self.task.filename or _is_placeholder_filename(self.task.filename):
                         clean_t = clean_filename(title) if title else "video"
-                        self.task.filename = f"{clean_t}.{ext}"
+                        cand_name = f"{clean_t}.{ext}"
+                        if self.task.save_dir:
+                            cand_name = get_unique_filename(self.task.save_dir, cand_name)
+                        self.task.filename = cand_name
 
                     self.task.total_bytes = info.get("filesize") or info.get("filesize_approx") or 0
                     self.task.supports_range = True
                     return True
             except Exception as e:
                 logger.debug(f"yt_dlp streaming probe exception: {e}")
+                if is_streaming_domain(self.task.url):
+                    self.task.error_message = f"Không thể lấy thông tin stream: {e}"
+                    self.task.status = TaskStatus.ERROR
+                    if self.on_progress:
+                        self.on_progress(self.task)
+                    return False
 
         headers = dict(self.task.headers)
         headers.setdefault("Accept-Encoding", "identity")
@@ -506,49 +558,60 @@ class DownloadEngine:
         except Exception as e:
             logger.debug(f"HEAD probe failed for {self.task.url}: {e}")
 
-        # 2. Fallback to GET with Range: bytes=0-0
+        # 2. Fallback to streaming GET with Range: bytes=0-0 (never buffer full 200 body into RAM)
         if not probe_success or self.task.total_bytes <= 0:
             try:
                 range_headers = dict(headers)
                 range_headers["Range"] = "bytes=0-0"
-                get_resp = await client.get(self.task.url, headers=range_headers, follow_redirects=True, timeout=15.0)
-                if get_resp.status_code >= 400 and not probe_success:
-                    self.task.error_message = f"Máy chủ trả về lỗi HTTP {get_resp.status_code}"
-                    self.task.status = TaskStatus.ERROR
-                    return False
-                if get_resp.status_code in (200, 206):
-                    self._extract_metadata(get_resp)
-                    if get_resp.status_code == 206:
-                        self.task.supports_range = True
-                        content_range = get_resp.headers.get("content-range", "")
-                        if "/" in content_range:
-                            try:
-                                total_str = content_range.split("/")[1]
-                                if total_str != "*":
+                async with client.stream(
+                    "GET", self.task.url, headers=range_headers, follow_redirects=True, timeout=15.0
+                ) as get_resp:
+                    if get_resp.status_code >= 400 and not probe_success:
+                        self.task.error_message = f"Máy chủ trả về lỗi HTTP {get_resp.status_code}"
+                        self.task.status = TaskStatus.ERROR
+                        if self.on_progress:
+                            self.on_progress(self.task)
+                        return False
+                    if get_resp.status_code in (200, 206):
+                        self._extract_metadata(get_resp)
+                        if get_resp.status_code == 206:
+                            self.task.supports_range = True
+                            content_range = get_resp.headers.get("content-range", "")
+                            if "/" in content_range:
+                                total_str = content_range.rsplit("/", 1)[1].strip()
+                                if total_str.isdigit():
                                     self.task.total_bytes = int(total_str)
-                            except ValueError:
-                                pass
             except Exception as e:
-                logger.error(f"GET Range probe failed for {self.task.url}: {e}")
-                self.task.error_message = f"Không thể kết nối đến máy chủ: {e}"
-                self.task.status = TaskStatus.ERROR
-                return False
+                if not probe_success:
+                    logger.error(f"GET Range probe failed for {self.task.url}: {e}")
+                    self.task.error_message = f"Không thể kết nối đến máy chủ: {e}"
+                    self.task.status = TaskStatus.ERROR
+                    if self.on_progress:
+                        self.on_progress(self.task)
+                    return False
 
         # Ensure filename is set
         if not self.task.filename:
-            self.task.filename = extract_filename_from_url(str(self.task.url))
+            extracted = extract_filename_from_url(str(self.task.url))
+            self.task.filename = (
+                get_unique_filename(self.task.save_dir, extracted)
+                if self.task.save_dir
+                else extracted
+            )
 
         return True
 
     def _extract_metadata(self, response: httpx.Response) -> None:
         """Extract size, ETag, Range support, and filename from response headers."""
         headers = response.headers
-        cl = headers.get("x-identity-content-length") or headers.get("content-length")
-        if cl:
-            try:
-                self.task.total_bytes = int(cl)
-            except ValueError:
-                pass
+        # Never treat 206 Content-Length (e.g. 1 byte for bytes=0-0) as full file size.
+        if response.status_code != 206:
+            cl = headers.get("x-identity-content-length") or headers.get("content-length")
+            if cl:
+                try:
+                    self.task.total_bytes = int(cl)
+                except ValueError:
+                    pass
 
         accept_ranges = headers.get("accept-ranges", "").lower()
         if accept_ranges == "bytes" or response.status_code == 206:
@@ -571,7 +634,11 @@ class DownloadEngine:
             and extracted_name != "download"
             and _is_placeholder_filename(self.task.filename)
         ):
-            self.task.filename = extracted_name
+            self.task.filename = (
+                get_unique_filename(self.task.save_dir, extracted_name)
+                if self.task.save_dir
+                else extracted_name
+            )
 
     def _save_metadata(self) -> None:
         """Save chunk progress state into .hdm_meta file for resume."""
@@ -685,7 +752,10 @@ class DownloadEngine:
                 if not line.startswith("#EXT-X-KEY") or "METHOD=AES-128" not in line.upper():
                     lines.append(line)
                     continue
-                match = re.search(r'URI="([^"]+)"', line) or re.search(r"URI=([^,\s]+)", line)
+                match = (
+                    re.search(r'URI="([^"]+)"', line, re.IGNORECASE)
+                    or re.search(r"URI=([^,\s]+)", line, re.IGNORECASE)
+                )
                 uri = match.group(1) if match else ""
                 if not uri.lower().startswith(("http://", "https://")):
                     lines.append(line)
@@ -712,7 +782,6 @@ class DownloadEngine:
     async def _download_streaming_video(self) -> bool:
         """Download streaming media from YouTube, Facebook, TikTok, etc. using yt_dlp."""
         import yt_dlp
-        from hdm.utils.formatters import clean_filename
 
         self.task.status = TaskStatus.DOWNLOADING
         if self.on_progress:
@@ -742,6 +811,18 @@ class DownloadEngine:
             if self.on_progress:
                 self.on_progress(self.task)
             return False
+
+        quality = getattr(self.task, "quality", "") or ""
+        is_audio_only = bool(
+            (self.task.filename and self.task.filename.lower().endswith(".mp3"))
+            or quality in ("128", "192", "320")
+        )
+
+        # Keep existing files safe on disk before yt-dlp writes the output file.
+        if self.task.filename and not _is_placeholder_filename(self.task.filename):
+            if os.path.exists(self.task.full_path):
+                self.task.filename = get_unique_filename(self.task.save_dir, self.task.filename)
+
         base_name = os.path.splitext(self.task.filename)[0] if self.task.filename else "video"
         base_name = clean_filename(base_name)
         out_pattern = os.path.join(self.task.save_dir, f"{base_name}.%(ext)s")
@@ -753,6 +834,9 @@ class DownloadEngine:
                 raise Exception("Tác vụ đã tạm dừng")
 
             if d["status"] == "downloading":
+                # Reset back to DOWNLOADING when moving from video track to audio track.
+                self.task.status = TaskStatus.DOWNLOADING
+                self.task.error_message = ""
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 downloaded = d.get("downloaded_bytes", 0)
                 speed = d.get("speed") or 0.0
@@ -837,12 +921,6 @@ class DownloadEngine:
             except Exception:
                 ffmpeg_bin = None
 
-        quality = getattr(self.task, "quality", "") or ""
-        is_audio_only = bool(
-            (self.task.filename and self.task.filename.lower().endswith(".mp3"))
-            or quality in ("128", "192", "320")
-        )
-
         if self.task.manifest:
             # The captured playlist already represents one specific rendition.
             format_spec = _stream_format_spec(quality, is_audio_only, self.task.manifest)
@@ -877,7 +955,15 @@ class DownloadEngine:
             ydl_opts["js_runtimes"] = runtimes
 
         if ffmpeg_bin:
-            ydl_opts["ffmpeg_location"] = os.path.dirname(ffmpeg_bin)
+            # imageio_ffmpeg ships a versioned binary name (ffmpeg-win-x86_64-v*.exe);
+            # passing its parent directory causes yt-dlp to miss it, whereas passing
+            # the executable path directly works for any binary name.
+            exe_name = os.path.basename(ffmpeg_bin).lower()
+            ydl_opts["ffmpeg_location"] = (
+                os.path.dirname(ffmpeg_bin)
+                if exe_name in ("ffmpeg", "ffmpeg.exe")
+                else ffmpeg_bin
+            )
             if is_audio_only:
                 ydl_opts["postprocessors"] = [{
                     "key": "FFmpegExtractAudio",
@@ -941,7 +1027,33 @@ class DownloadEngine:
                         self.on_progress(self.task)
                     return False
 
+            need_resolve_title = (
+                not self.task.manifest
+                and _is_placeholder_filename(self.task.filename)
+            )
+
             def do_dl():
+                nonlocal base_name, out_pattern
+                if need_resolve_title:
+                    with yt_dlp.YoutubeDL(dict(ydl_opts, skip_download=True)) as ydl_probe:
+                        extracted = ydl_probe.extract_info(source, download=False)
+                    if extracted:
+                        title = extracted.get("title") or ""
+                        ext_guess = "mp3" if is_audio_only else (extracted.get("ext") or "mp4")
+                        if ext_guess in ("unknown_video", "none"):
+                            ext_guess = "mp4"
+                        clean_t = clean_filename(title) if title else "video"
+                        resolved_name = get_unique_filename(
+                            self.task.save_dir, f"{clean_t}.{ext_guess}"
+                        )
+                        self.task.filename = resolved_name
+                        base_name = os.path.splitext(resolved_name)[0]
+                        out_pattern = os.path.join(self.task.save_dir, f"{base_name}.%(ext)s")
+                        ydl_opts["outtmpl"] = out_pattern
+                        if self.on_progress:
+                            self.on_progress(self.task)
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            return ydl.process_ie_result(extracted, download=True)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     return ydl.extract_info(source, download=True)
 
@@ -959,7 +1071,12 @@ class DownloadEngine:
                 final_path = info["_filename"]
 
             if not final_path:
-                for ext in [".mp4", ".webm", ".mkv", ".m4a", ".mp3"]:
+                ext_order = (
+                    [".mp3", ".m4a", ".mp4", ".webm", ".mkv"]
+                    if is_audio_only
+                    else [".mp4", ".webm", ".mkv", ".m4a", ".mp3"]
+                )
+                for ext in ext_order:
                     cand = os.path.join(self.task.save_dir, f"{base_name}{ext}")
                     if os.path.exists(cand):
                         final_path = cand
@@ -1015,6 +1132,10 @@ class DownloadEngine:
         if self.task.manifest or is_streaming_url(self.task.url):
             return await self._download_streaming_video()
 
+        self._fail_counts.clear()
+        self._rate_next_time = 0.0
+        self._disk_writer_error = None
+
         timeout = httpx.Timeout(connect=15.0, read=45.0, write=15.0, pool=45.0)
         limits = httpx.Limits(max_connections=64, max_keepalive_connections=32, keepalive_expiry=30.0)
         default_headers = {"Accept-Encoding": "identity"}
@@ -1034,23 +1155,6 @@ class DownloadEngine:
                 if not success:
                     return False
 
-            # Check free disk space before preallocation
-            from hdm.core.sparse_file import check_free_space
-            if self.task.total_bytes > 0:
-                has_space, free_bytes, req_bytes = check_free_space(self.task.save_dir, self.task.total_bytes)
-                if not has_space:
-                    from hdm.utils.formatters import format_bytes
-                    drive = os.path.splitdrive(os.path.abspath(self.task.save_dir))[0] or self.task.save_dir
-                    self.task.error_message = (
-                        f"Ổ đĩa {drive} không đủ dung lượng trống "
-                        f"(Cần: {format_bytes(req_bytes)}, Còn trống: {format_bytes(free_bytes)}). "
-                        f"Vui lòng chọn thư mục lưu trên ổ đĩa khác (ví dụ ổ D:)."
-                    )
-                    self.task.status = TaskStatus.ERROR
-                    if self.on_progress:
-                        self.on_progress(self.task)
-                    return False
-
             try:
                 os.makedirs(self.task.save_dir, exist_ok=True)
             except Exception as e:
@@ -1065,6 +1169,7 @@ class DownloadEngine:
             self._migrate_legacy_temp()
 
             # 2. Initialize chunks or load from saved metadata
+            has_meta = False
             if self.task.supports_range and self.task.total_bytes > 0:
                 has_meta = self._load_metadata()
                 if has_meta and not os.path.exists(self.task.temp_path):
@@ -1093,23 +1198,48 @@ class DownloadEngine:
                                 status="pending",
                             )
                         )
-                    # Pre-allocate sparse file
-                    preallocate_file(self.task.temp_path, self.task.total_bytes)
-                    self._save_metadata()
             else:
-                # Single-stream download
-                if not self.task.chunks:
-                    self.task.chunks = [
-                        Chunk(
-                            chunk_id=1,
-                            start_byte=0,
-                            end_byte=self.task.total_bytes - 1 if self.task.total_bytes > 0 else -1,
-                            current_pos=0,
-                            status="pending",
-                        )
-                    ]
+                # Single-stream download always restarts cleanly from byte 0 (mode="wb").
+                self.task.downloaded_bytes = 0
+                self.task.chunks = [
+                    Chunk(
+                        chunk_id=1,
+                        start_byte=0,
+                        end_byte=self.task.total_bytes - 1 if self.task.total_bytes > 0 else -1,
+                        current_pos=0,
+                        status="pending",
+                    )
+                ]
+
+            # Check free disk space only for remaining bytes not yet downloaded on disk.
+            from hdm.core.sparse_file import check_free_space
+            if self.task.total_bytes > 0:
+                already_downloaded = (
+                    self.task.downloaded_bytes
+                    if (self.task.supports_range and has_meta and os.path.exists(self.task.temp_path))
+                    else 0
+                )
+                required_space = max(0, self.task.total_bytes - already_downloaded)
+                has_space, free_bytes, _ = check_free_space(self.task.save_dir, required_space)
+                if not has_space:
+                    from hdm.utils.formatters import format_bytes
+                    drive = os.path.splitdrive(os.path.abspath(self.task.save_dir))[0] or self.task.save_dir
+                    self.task.error_message = (
+                        f"Ổ đĩa {drive} không đủ dung lượng trống "
+                        f"(Cần: {format_bytes(required_space)}, Còn trống: {format_bytes(free_bytes)}). "
+                        f"Vui lòng chọn thư mục lưu trên ổ đĩa khác (ví dụ ổ D:)."
+                    )
+                    self.task.status = TaskStatus.ERROR
+                    if self.on_progress:
+                        self.on_progress(self.task)
+                    return False
+
+            if self.task.supports_range and self.task.total_bytes > 0 and (not has_meta or not os.path.exists(self.task.temp_path)):
+                preallocate_file(self.task.temp_path, self.task.total_bytes)
+                self._save_metadata()
 
             self.task.status = TaskStatus.DOWNLOADING
+            self.task.error_message = ""
             self._last_speed_check_time = time.time()
             self._last_downloaded_bytes = self.task.downloaded_bytes
 
@@ -1121,10 +1251,13 @@ class DownloadEngine:
             except Exception as e:
                 self.task.error_message = f"Không thể mở tệp ghi: {e}"
                 self.task.status = TaskStatus.ERROR
+                if self.on_progress:
+                    self.on_progress(self.task)
                 return False
 
             # 4. Launch speed tracking task
             speed_task = asyncio.create_task(self._speed_monitor())
+            cancelled_by_loop = False
 
             try:
                 # 5. Launch worker tasks. Never open more connections than the
@@ -1140,6 +1273,10 @@ class DownloadEngine:
                 ]
 
                 await asyncio.gather(*workers)
+            except asyncio.CancelledError:
+                cancelled_by_loop = True
+                if not self._cancel_requested.is_set():
+                    self._pause_requested.set()
             finally:
                 speed_task.cancel()
                 try:
@@ -1154,6 +1291,13 @@ class DownloadEngine:
                     self._disk_writer = None
 
             # 6. Check completion status
+            if cancelled_by_loop and not self._cancel_requested.is_set():
+                self.task.status = TaskStatus.PAUSED
+                self.task.speed = 0.0
+                if self.task.supports_range:
+                    self._save_metadata()
+                raise asyncio.CancelledError()
+
             if self._cancel_requested.is_set():
                 self.task.status = TaskStatus.CANCELLED
                 self.task.speed = 0.0
@@ -1163,7 +1307,8 @@ class DownloadEngine:
             if self._pause_requested.is_set():
                 self.task.status = TaskStatus.PAUSED
                 self.task.speed = 0.0
-                self._save_metadata()
+                if self.task.supports_range:
+                    self._save_metadata()
                 if self.on_progress:
                     self.on_progress(self.task)
                 return False
@@ -1192,14 +1337,16 @@ class DownloadEngine:
                 # for the (same-volume) atomic rename below.
                 self._cleanup_temp_files(keep_partial=True)
 
-                # Move .part to final file
+                # Move .part to final file without overwriting an existing file on disk.
                 try:
                     if os.path.exists(self.task.full_path):
-                        os.remove(self.task.full_path)
+                        self.task.filename = get_unique_filename(self.task.save_dir, self.task.filename)
                     shutil.move(self.task.temp_path, self.task.full_path)
                 except Exception as e:
                     self.task.error_message = f"Lỗi hoàn tất tệp: {e}"
                     self.task.status = TaskStatus.ERROR
+                    if self.on_progress:
+                        self.on_progress(self.task)
                     return False
 
                 # Drop the shared temp folder when no other task is using it.
@@ -1303,12 +1450,21 @@ class DownloadEngine:
             self.task.error_message = f"Tải thất bại sau {count} lần thử ({reason})"
             self.task.status = TaskStatus.ERROR
 
+    def _register_permanent_failure(self, chunk: Chunk, reason: str) -> None:
+        """Fail the chunk and task immediately for unrecoverable HTTP responses."""
+        chunk.status = "failed"
+        self._fail_counts[chunk.chunk_id] = MAX_CHUNK_RETRIES
+        self.task.error_message = reason
+        self.task.status = TaskStatus.ERROR
+
     async def _download_chunk(self, client: httpx.AsyncClient, chunk: Chunk) -> None:
         """Download assigned byte range and stream into non-blocking disk writer."""
         headers = dict(self.task.headers)
         headers.setdefault("Accept-Encoding", "identity")
+        sent_range = False
         if self.task.supports_range and chunk.end_byte >= chunk.current_pos:
             headers["Range"] = f"bytes={chunk.current_pos}-{chunk.end_byte}"
+            sent_range = True
         elif not self.task.supports_range:
             # Server ignores Range: a retry must restart the stream from byte 0
             chunk.current_pos = chunk.start_byte
@@ -1325,13 +1481,69 @@ class DownloadEngine:
             backoff = min(0.3 * (1.5 ** fail_count) + random.uniform(0.1, 0.3), 3.0)
             await asyncio.sleep(backoff)
 
+        stream_chunk_size = READ_BUFFER_SIZE
+        if self.speed_limit_kbps > 0:
+            stream_chunk_size = min(READ_BUFFER_SIZE, max(8192, (self.speed_limit_kbps * 1024) // 4))
+
         try:
             async with client.stream("GET", self.task.url, headers=headers) as resp:
+                if resp.status_code == 416:
+                    if chunk.end_byte >= 0 and chunk.current_pos > chunk.end_byte:
+                        chunk.status = "completed"
+                        chunk.speed = 0.0
+                    else:
+                        self._register_permanent_failure(chunk, "HTTP 416 (Phạm vi byte không hợp lệ)")
+                    return
+
+                if resp.status_code in PERMANENT_HTTP_ERRORS:
+                    self._register_permanent_failure(chunk, f"Máy chủ trả về lỗi HTTP {resp.status_code}")
+                    return
+
                 if resp.status_code not in (200, 206):
                     self._register_failure(chunk, f"HTTP {resp.status_code}")
                     return
 
-                async for block in resp.aiter_bytes(chunk_size=READ_BUFFER_SIZE):
+                if sent_range and resp.status_code == 200:
+                    # Server ignored Range and started from byte 0. Never write into an offset > 0
+                    # or during a multi-chunk download, or the partial file will be corrupted.
+                    if len(self.task.chunks) == 1 and chunk.start_byte == 0:
+                        self.task.supports_range = False
+                        chunk.current_pos = 0
+                        self.task.downloaded_bytes = 0
+                        if self._disk_writer:
+                            await self._disk_writer.truncate(0)
+                    else:
+                        self._register_failure(chunk, "Máy chủ bỏ qua header Range (HTTP 200)")
+                        return
+
+                if resp.status_code == 206:
+                    content_range = resp.headers.get("content-range", "")
+                    if content_range.lower().startswith("bytes "):
+                        range_spec = content_range[6:].split("/", 1)[0].strip()
+                        if "-" in range_spec:
+                            try:
+                                resp_start = int(range_spec.split("-", 1)[0].strip())
+                            except ValueError:
+                                resp_start = chunk.current_pos
+                            if resp_start != chunk.current_pos:
+                                self._register_failure(
+                                    chunk,
+                                    f"Content-Range không khớp ({resp_start} != {chunk.current_pos})",
+                                )
+                                return
+
+                if resp.status_code == 200 and not self.task.supports_range and chunk.end_byte < 0:
+                    cl = resp.headers.get("x-identity-content-length") or resp.headers.get("content-length")
+                    if cl:
+                        try:
+                            known_len = int(cl)
+                            if known_len > 0:
+                                self.task.total_bytes = known_len
+                                chunk.end_byte = known_len - 1
+                        except ValueError:
+                            pass
+
+                async for block in resp.aiter_bytes(chunk_size=stream_chunk_size):
                     if self._pause_requested.is_set() or self._cancel_requested.is_set():
                         break
 
@@ -1339,15 +1551,19 @@ class DownloadEngine:
                     if block_len == 0:
                         continue
 
+                    if chunk.end_byte >= 0:
+                        remaining = chunk.end_byte - chunk.current_pos + 1
+                        if remaining <= 0:
+                            break
+                        if block_len > remaining:
+                            block = block[:remaining]
+                            block_len = remaining
+
                     # Direct write via non-blocking async queue
                     if self._disk_writer:
                         await self._disk_writer.put(chunk.current_pos, block)
 
                     chunk.current_pos += block_len
-
-                    # Stop if reached end of dynamically shortened chunk
-                    if self.task.supports_range and chunk.current_pos > chunk.end_byte:
-                        break
 
                     # Update local chunk speed
                     now = time.time()
@@ -1357,21 +1573,21 @@ class DownloadEngine:
                         chunk_last_bytes = chunk.downloaded_bytes
                         chunk_last_time = now
 
-                    # Bandwidth throttling when speed_limit_kbps is configured
-                    if self.speed_limit_kbps > 0:
-                        active_cnt = max(
-                            1,
-                            sum(1 for c in self.task.chunks if c.status == "downloading"),
-                        )
-                        per_worker_bps = (self.speed_limit_kbps * 1024.0) / active_cnt
-                        if per_worker_bps > 0 and chunk.speed > per_worker_bps:
-                            sleep_sec = min(0.25, block_len / per_worker_bps)
-                            if sleep_sec > 0.005:
-                                await asyncio.sleep(sleep_sec)
+                    await self._apply_speed_limit(block_len)
 
-                # Verify completion
-                if chunk.current_pos > chunk.end_byte or (
-                    not self.task.supports_range and not self._pause_requested.is_set()
+                    # Stop immediately once this chunk's assigned byte range is filled
+                    if chunk.end_byte >= 0 and chunk.current_pos > chunk.end_byte:
+                        break
+
+                # Verify completion strictly: known-length streams must reach end_byte + 1.
+                if chunk.end_byte >= 0 and chunk.current_pos > chunk.end_byte:
+                    chunk.status = "completed"
+                    chunk.speed = 0.0
+                elif (
+                    chunk.end_byte < 0
+                    and not self.task.supports_range
+                    and not self._pause_requested.is_set()
+                    and not self._cancel_requested.is_set()
                 ):
                     chunk.status = "completed"
                     chunk.speed = 0.0
@@ -1385,7 +1601,7 @@ class DownloadEngine:
                 chunk.status = "failed"
                 self.task.status = TaskStatus.ERROR
                 self.task.error_message = f"Lỗi ghi đĩa: {self._disk_writer.error}"
-            elif not self._pause_requested.is_set():
+            elif not self._pause_requested.is_set() and not self._cancel_requested.is_set():
                 self._register_failure(chunk, f"{type(e).__name__}: {e}")
         finally:
             if self.on_chunk_update:

@@ -406,8 +406,566 @@ def test_ytdlp_receives_proxy(monkeypatch):
     print("✅ yt-dlp proxy and credential options passed!")
 
 
+def test_multi_chunk_download():
+    asyncio.run(run_engine_test())
+
+
+def test_proxy_downloads():
+    asyncio.run(run_proxy_test())
+
+
 def test_basic_auth_download():
     asyncio.run(run_auth_test())
+
+
+def test_probe_non_range_streaming_and_206_wildcard():
+    """Probe must stream GET Range fallback (never buffer huge 200 OK body) and ignore 206 Content-Length=1."""
+
+    class NonRangeBigHandler(BaseHTTPRequestHandler):
+        fully_sent = False
+
+        def do_HEAD(self):
+            self.send_response(405)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(5 * 1024 * 1024))
+            self.send_header("Content-Disposition", 'attachment; filename="big_iso.bin"')
+            self.end_headers()
+            try:
+                for _ in range(80):
+                    self.wfile.write(b"X" * 65536)
+                    self.wfile.flush()
+                NonRangeBigHandler.fully_sent = True
+            except OSError:
+                # Expected: probe closes the stream as soon as headers arrive
+                pass
+
+        def log_message(self, format, *args):
+            pass
+
+    class Wildcard206Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(405)
+            self.end_headers()
+
+        def do_GET(self):
+            self.send_response(206)
+            self.send_header("Content-Range", "bytes 0-0/*")
+            self.send_header("Content-Length", "1")
+            self.end_headers()
+            self.wfile.write(b"A")
+
+        def log_message(self, format, *args):
+            pass
+
+    srv1 = HTTPServer(("127.0.0.1", 0), NonRangeBigHandler)
+    threading.Thread(target=srv1.serve_forever, daemon=True).start()
+    srv2 = HTTPServer(("127.0.0.1", 0), Wildcard206Handler)
+    threading.Thread(target=srv2.serve_forever, daemon=True).start()
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            t1 = DownloadTask(url=f"http://127.0.0.1:{srv1.server_port}/dl", filename="", save_dir=td)
+            e1 = DownloadEngine(task=t1)
+            async with httpx.AsyncClient() as client:
+                assert await e1.probe(client)
+            assert t1.total_bytes == 5 * 1024 * 1024
+            assert t1.filename == "big_iso.bin"
+            assert t1.supports_range is False
+            assert NonRangeBigHandler.fully_sent is False
+
+            t2 = DownloadTask(url=f"http://127.0.0.1:{srv2.server_port}/stream.bin", filename="", save_dir=td)
+            e2 = DownloadEngine(task=t2)
+            async with httpx.AsyncClient() as client:
+                assert await e2.probe(client)
+            assert t2.supports_range is True
+            assert t2.total_bytes == -1, f"206 wildcard must not become 1 byte, got {t2.total_bytes}"
+
+    try:
+        asyncio.run(run())
+    finally:
+        srv1.shutdown()
+        srv1.server_close()
+        srv2.shutdown()
+        srv2.server_close()
+
+
+def test_multi_chunk_rejects_spurious_200_and_clamps_overflow():
+    """Spurious 200 OK on ranged chunks must fail safely; 206 overflow must be clamped to end_byte."""
+    payload = os.urandom(3 * 1024 * 1024)  # 3 MB exact random bytes
+
+    class Spurious200Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            rng = self.headers.get("Range", "")
+            if rng.startswith("bytes=0-"):
+                end = int(rng.split("-")[1])
+                part = payload[0 : end + 1]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes 0-{end}/{len(payload)}")
+                self.send_header("Content-Length", str(len(part)))
+                self.end_headers()
+                self.wfile.write(part)
+            else:
+                # Buggy CDN sends 200 OK from byte 0 instead of 206
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    class Overflow206Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            rng = self.headers.get("Range", "bytes=0-")
+            parts = rng.replace("bytes=", "").split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else len(payload) - 1
+            # Intentionally return extra garbage bytes beyond end_byte
+            extra = b"CORRUPT_OVERFLOW!" * 100
+            body = payload[start : end + 1] + extra
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            pass
+
+    srv_bad = HTTPServer(("127.0.0.1", 0), Spurious200Handler)
+    threading.Thread(target=srv_bad.serve_forever, daemon=True).start()
+    srv_over = HTTPServer(("127.0.0.1", 0), Overflow206Handler)
+    threading.Thread(target=srv_over.serve_forever, daemon=True).start()
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            # 1. Spurious 200 on chunk > 0 must NOT succeed with corrupted data
+            t_bad = DownloadTask(
+                url=f"http://127.0.0.1:{srv_bad.server_port}/bad.bin",
+                filename="bad.bin",
+                save_dir=td,
+                num_connections=2,
+            )
+            eng_bad = DownloadEngine(task=t_bad)
+            # Fail fast once retry runs; speed up test by checking after 1-2 tries or letting it finish
+            # Lowering backoff? Wait: 8 retries is ~12s max; let's pause right after failure registers or let run?
+            # Actually let's patch MAX_CHUNK_RETRIES in engine module temporarily? Let's test real behavior quickly!
+            import hdm.core.engine as eng_mod
+            orig_retries = eng_mod.MAX_CHUNK_RETRIES
+            eng_mod.MAX_CHUNK_RETRIES = 2
+            try:
+                ok = await eng_bad.run()
+            finally:
+                eng_mod.MAX_CHUNK_RETRIES = orig_retries
+            assert not ok
+            assert t_bad.status == TaskStatus.ERROR
+            assert not os.path.exists(os.path.join(td, "bad.bin"))
+
+            # 2. 206 response sending trailing overflow bytes must be clamped accurately
+            t_over = DownloadTask(
+                url=f"http://127.0.0.1:{srv_over.server_port}/exact.bin",
+                filename="exact.bin",
+                save_dir=td,
+                num_connections=3,
+            )
+            eng_over = DownloadEngine(task=t_over)
+            assert await eng_over.run(), t_over.error_message
+            with open(os.path.join(td, "exact.bin"), "rb") as f:
+                assert f.read() == payload
+
+    try:
+        asyncio.run(run())
+    finally:
+        srv_bad.shutdown()
+        srv_bad.server_close()
+        srv_over.shutdown()
+        srv_over.server_close()
+
+
+def test_non_range_pause_resume_and_truncated_stream():
+    """Non-range download must reject truncated EOF, retry cleanly, and support pause->resume."""
+    payload = b"NON_RANGE_DATA_" * 150000  # ~2.25 MB
+
+    class NonRangeFlakyHandler(BaseHTTPRequestHandler):
+        attempts = 0
+        pause_mode = False
+        first_chunk_sent = threading.Event()
+        release_stream = threading.Event()
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+
+        def do_GET(self):
+            NonRangeFlakyHandler.attempts += 1
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if not NonRangeFlakyHandler.pause_mode and NonRangeFlakyHandler.attempts == 1:
+                # Truncate early at ~30% without raising server error
+                self.wfile.write(payload[: len(payload) // 3])
+                self.wfile.flush()
+                return
+            if NonRangeFlakyHandler.pause_mode and NonRangeFlakyHandler.attempts == 1:
+                # Stream half, signal client, then block until pause is issued
+                self.wfile.write(payload[: len(payload) // 2])
+                self.wfile.flush()
+                NonRangeFlakyHandler.first_chunk_sent.set()
+                NonRangeFlakyHandler.release_stream.wait(timeout=3.0)
+                return
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), NonRangeFlakyHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            # Test 1: Truncated first attempt must retry and succeed with full bytes
+            t = DownloadTask(
+                url=f"http://127.0.0.1:{srv.server_port}/file.bin",
+                filename="file.bin",
+                save_dir=td,
+                num_connections=4,
+            )
+            eng = DownloadEngine(task=t)
+            assert await eng.run(), t.error_message
+            assert NonRangeFlakyHandler.attempts >= 2
+            with open(os.path.join(td, "file.bin"), "rb") as f:
+                assert f.read() == payload
+
+            # Test 2: Pause mid-stream on non-range task, then resume via new run()
+            NonRangeFlakyHandler.attempts = 0
+            NonRangeFlakyHandler.pause_mode = True
+            NonRangeFlakyHandler.first_chunk_sent.clear()
+            NonRangeFlakyHandler.release_stream.clear()
+            t2 = DownloadTask(
+                url=f"http://127.0.0.1:{srv.server_port}/file2.bin",
+                filename="file2.bin",
+                save_dir=td,
+                num_connections=1,
+            )
+            eng2 = DownloadEngine(task=t2)
+            run_task = asyncio.create_task(eng2.run())
+            while not NonRangeFlakyHandler.first_chunk_sent.is_set() and not run_task.done():
+                await asyncio.sleep(0.02)
+            await asyncio.sleep(0.05)
+            eng2.pause()
+            NonRangeFlakyHandler.release_stream.set()
+            ok = await run_task
+            assert not ok and t2.status == TaskStatus.PAUSED
+
+            # Resume same task (chunks list is non-empty with old state)
+            NonRangeFlakyHandler.pause_mode = False
+            eng2_resume = DownloadEngine(task=t2)
+            assert await eng2_resume.run(), t2.error_message
+            assert t2.status == TaskStatus.COMPLETED
+            with open(os.path.join(td, "file2.bin"), "rb") as f:
+                assert f.read() == payload
+
+    try:
+        asyncio.run(run())
+    finally:
+        NonRangeFlakyHandler.release_stream.set()
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_cancelled_task_saves_resume_metadata_and_resumes():
+    """Cancelling the asyncio task (app shutdown) must flush disk writer and save .meta for resume."""
+    payload = b"CANCEL_RESUME_" * 400000  # ~5.6 MB
+    started_evt = threading.Event()
+    release_evt = threading.Event()
+
+    class SlowRangeHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            rng = self.headers.get("Range", "bytes=0-")
+            parts = rng.replace("bytes=", "").split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else len(payload) - 1
+            chunk = payload[start : min(end + 1, len(payload))]
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
+            self.send_header("Content-Length", str(len(chunk)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            mid = len(chunk) // 2
+            self.wfile.write(chunk[:mid])
+            self.wfile.flush()
+            started_evt.set()
+            if not release_evt.is_set():
+                release_evt.wait(timeout=3.0)
+            try:
+                self.wfile.write(chunk[mid:])
+                self.wfile.flush()
+            except OSError:
+                pass
+
+        def log_message(self, format, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), SlowRangeHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            t = DownloadTask(
+                url=f"http://127.0.0.1:{srv.server_port}/resumable.bin",
+                filename="resumable.bin",
+                save_dir=td,
+                num_connections=2,
+            )
+            eng = DownloadEngine(task=t)
+            coro = asyncio.create_task(eng.run())
+            while not started_evt.is_set() or t.downloaded_bytes == 0:
+                await asyncio.sleep(0.05)
+                if coro.done():
+                    break
+            coro.cancel()
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+            release_evt.set()
+
+            assert t.status == TaskStatus.PAUSED
+            assert os.path.exists(t.meta_path), ".meta must be preserved on loop cancel"
+            assert os.path.exists(t.temp_path), ".part must be preserved on loop cancel"
+
+            # Resume from saved .meta in a brand new task object with same id
+            t_resumed = DownloadTask(
+                id=t.id,
+                url=t.url,
+                filename=t.filename,
+                save_dir=td,
+                total_bytes=t.total_bytes,
+                supports_range=True,
+                num_connections=2,
+            )
+            eng2 = DownloadEngine(task=t_resumed)
+            assert await eng2.run(), t_resumed.error_message
+            with open(os.path.join(td, "resumable.bin"), "rb") as f:
+                assert f.read() == payload
+
+    try:
+        asyncio.run(run())
+    finally:
+        release_evt.set()
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_no_overwrite_existing_file_and_permanent_404():
+    """Probe filename collision must never delete an existing file; 404 must fail fast without 8 retries."""
+    payload = b"NEW_DOWNLOAD_BYTES"
+    hits = {"404": 0}
+
+    class CollisionAnd404Handler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            if self.path == "/missing":
+                hits["404"] += 1
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", 'attachment; filename="existing.bin"')
+            self.end_headers()
+
+        def do_GET(self):
+            if self.path == "/missing":
+                hits["404"] += 1
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", 'attachment; filename="existing.bin"')
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), CollisionAnd404Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            existing_path = os.path.join(td, "existing.bin")
+            with open(existing_path, "wb") as f:
+                f.write(b"DO_NOT_OVERWRITE_ME")
+
+            t = DownloadTask(
+                url=f"http://127.0.0.1:{srv.server_port}/dl?id=99",
+                filename="download",
+                save_dir=td,
+                num_connections=1,
+            )
+            eng = DownloadEngine(task=t)
+            assert await eng.run(), t.error_message
+            with open(existing_path, "rb") as f:
+                assert f.read() == b"DO_NOT_OVERWRITE_ME"
+            assert t.filename == "existing (1).bin"
+            with open(os.path.join(td, "existing (1).bin"), "rb") as f:
+                assert f.read() == payload
+
+            # Permanent 404 from chunk GET after HEAD=200 must fail in 1 attempt, not 8
+            t404 = DownloadTask(
+                url=f"http://127.0.0.1:{srv.server_port}/missing",
+                filename="missing.bin",
+                save_dir=td,
+                total_bytes=1024,
+                supports_range=True,
+                num_connections=1,
+            )
+            eng404 = DownloadEngine(task=t404)
+            ok404 = await eng404.run()
+            assert not ok404
+            assert t404.status == TaskStatus.ERROR
+            assert hits["404"] == 1, f"Expected fail-fast single 404 attempt, got {hits['404']}"
+
+    try:
+        asyncio.run(run())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_speed_limit_pacing():
+    """speed_limit_kbps must throttle loopback downloads near the configured limit."""
+    import time
+
+    payload = b"S" * (280 * 1024)  # 280 KB
+
+    class FastHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            rng = self.headers.get("Range", "bytes=0-")
+            parts = rng.replace("bytes=", "").split("-")
+            start = int(parts[0])
+            end = int(parts[1]) if parts[1] else len(payload) - 1
+            chunk = payload[start : end + 1]
+            self.send_response(206)
+            self.send_header("Content-Range", f"bytes {start}-{end}/{len(payload)}")
+            self.send_header("Content-Length", str(len(chunk)))
+            self.end_headers()
+            self.wfile.write(chunk)
+
+        def log_message(self, format, *args):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), FastHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            t = DownloadTask(
+                url=f"http://127.0.0.1:{srv.server_port}/throttled.bin",
+                filename="throttled.bin",
+                save_dir=td,
+                num_connections=2,
+            )
+            # 160 KB/s limit -> 280 KB should take at least ~1.3s
+            eng = DownloadEngine(task=t, speed_limit_kbps=160)
+            t0 = time.monotonic()
+            assert await eng.run(), t.error_message
+            elapsed = time.monotonic() - t0
+            assert elapsed >= 1.2, f"Throttling bypassed: finished in {elapsed:.2f}s"
+
+    try:
+        asyncio.run(run())
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_streaming_placeholder_title_and_status_reset(monkeypatch):
+    """Streaming downloads must resolve placeholder names, locate imageio_ffmpeg exe, and reset PROCESSING -> DOWNLOADING."""
+    import yt_dlp
+
+    captured_opts = []
+    observed_states = []
+
+    class FakeYDL:
+        def __init__(self, opts):
+            self.opts = opts
+            captured_opts.append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=True):
+            assert not download, "Placeholder filename must probe metadata first"
+            return {"title": "Cool: Demo/Video", "ext": "mp4"}
+
+        def process_ie_result(self, info, download=True):
+            assert download
+            outtmpl = self.opts["outtmpl"]
+            out_file = outtmpl.replace("%(ext)s", "mp4")
+            with open(out_file, "wb") as f:
+                f.write(b"FAKE_MP4_DATA")
+            for hook in self.opts.get("progress_hooks", []):
+                hook({"status": "downloading", "total_bytes": 100, "downloaded_bytes": 50, "speed": 10.0})
+                hook({"status": "finished"})
+                # Audio track begins downloading after video track finished
+                hook({"status": "downloading", "total_bytes": 40, "downloaded_bytes": 20, "speed": 5.0})
+                observed_states.append(task_ref.status)
+            return {"requested_downloads": [{"filepath": out_file}]}
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", FakeYDL)
+    # Force imageio_ffmpeg branch by hiding PATH ffmpeg
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("os.path.exists", lambda p: False if str(p).endswith("ffmpeg.exe") else os.path.lexists(p))
+
+    with tempfile.TemporaryDirectory() as td:
+        task_ref = DownloadTask(
+            url="https://www.youtube.com/watch?v=test123",
+            filename="watch",
+            save_dir=td,
+            num_connections=2,
+        )
+        engine = DownloadEngine(task=task_ref)
+        ok = asyncio.run(engine.run())
+        assert ok, task_ref.error_message
+        assert task_ref.filename == "Cool_ Demo_Video.mp4"
+        assert os.path.exists(os.path.join(td, "Cool_ Demo_Video.mp4"))
+        assert observed_states == [TaskStatus.DOWNLOADING]
+        ffmpeg_loc = captured_opts[-1].get("ffmpeg_location", "")
+        assert ffmpeg_loc.lower().endswith(".exe"), f"Expected full exe path for imageio_ffmpeg, got {ffmpeg_loc!r}"
 
 
 if __name__ == "__main__":

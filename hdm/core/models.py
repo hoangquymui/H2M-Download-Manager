@@ -188,11 +188,25 @@ class DownloadTask:
         except ValueError:
             status = TaskStatus.QUEUED
 
-        # If it was downloading when the app closed, revert to PAUSED
-        if status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING):
+        # If the task was active when the app closed, revert to PAUSED so it can resume cleanly
+        if status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.PROCESSING):
             status = TaskStatus.PAUSED
 
         chunks = [Chunk.from_dict(cd) for cd in data.get("chunks", [])]
+        if status != TaskStatus.COMPLETED:
+            for chunk in chunks:
+                if chunk.end_byte >= 0 and chunk.remaining_bytes <= 0:
+                    chunk.status = "completed"
+                elif chunk.status in ("downloading", "failed"):
+                    chunk.status = "pending"
+                chunk.speed = 0.0
+
+        raw_headers = data.get("headers")
+        headers = dict(raw_headers) if isinstance(raw_headers, dict) else {}
+        try:
+            num_conns = max(1, min(32, int(data.get("num_connections", 8))))
+        except (TypeError, ValueError):
+            num_conns = 8
 
         task = cls(
             id=data.get("id", str(uuid.uuid4())),
@@ -207,8 +221,8 @@ class DownloadTask:
             supports_range=bool(data.get("supports_range", False)),
             etag=data.get("etag", ""),
             content_type=data.get("content_type", ""),
-            headers=data.get("headers", {}),
-            num_connections=int(data.get("num_connections", 8)),
+            headers=headers,
+            num_connections=num_conns,
             category=data.get("category", FileCategory.OTHERS.value),
             quality=data.get("quality", ""),
             manifest=data.get("manifest", ""),

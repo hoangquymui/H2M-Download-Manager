@@ -87,6 +87,14 @@ def clean_filename(filename: str) -> str:
     stem, ext = os.path.splitext(cleaned)
     if stem.upper() in reserved_names:
         cleaned = f"_{cleaned}"
+        stem, ext = os.path.splitext(cleaned)
+
+    # Cap overly long filenames (e.g. long video titles) while keeping extension
+    # so Windows path limits are not exceeded.
+    max_len = 180
+    if len(cleaned) > max_len:
+        keep_stem = max(16, max_len - len(ext))
+        cleaned = f"{stem[:keep_stem].rstrip('. ')}{ext}"
 
     return cleaned if cleaned else "download"
 

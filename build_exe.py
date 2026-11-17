@@ -39,6 +39,7 @@ def build():
         "--collect-all=yt_dlp",
         "--collect-all=yt_dlp_ejs",
         "--collect-all=imageio_ffmpeg",
+        "--collect-all=socksio",
         "--clean",
         "--noconfirm",
         main_py,

@@ -18,17 +18,28 @@ def is_windows() -> bool:
     return platform.system() == "Windows"
 
 
+def is_frozen_executable() -> bool:
+    """True when running from a PyInstaller or Nuitka compiled binary."""
+    if getattr(sys, "frozen", False):
+        return True
+    if "__compiled__" in globals():
+        return True
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and hasattr(main_mod, "__compiled__"):
+        return True
+    return False
+
+
 def get_autostart_command() -> str:
     """Return the quoted command string to launch HDM on Windows startup."""
-    if getattr(sys, "frozen", False):
+    if is_frozen_executable():
         exe_path = sys.executable
         return f'"{exe_path}" --autostart'
-    else:
-        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        main_py = os.path.join(root_dir, "main.py")
-        if os.path.exists(main_py):
-            return f'"{sys.executable}" "{main_py}" --autostart'
-        return f'"{sys.executable}" "{sys.argv[0]}" --autostart'
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    main_py = os.path.join(root_dir, "main.py")
+    if os.path.exists(main_py):
+        return f'"{sys.executable}" "{main_py}" --autostart'
+    return f'"{sys.executable}" "{sys.argv[0]}" --autostart'
 
 
 def is_autostart_enabled() -> bool:

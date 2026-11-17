@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from hdm import __version__
+
 # Supported language codes
 LANG_VI = "vi"
 LANG_EN = "en"
@@ -22,7 +24,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         # App & Window
         "app_title": "H2M Download Manager",
         "app_subtitle": "DOWNLOAD MANAGER",
-        "app_version_footer": "H2M Download Manager v1.0",
+        "app_version_footer": f"H2M Download Manager v{__version__}",
 
         # Menus
         "menu_file": "Tệp",
@@ -301,16 +303,29 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "settings_btn_save": "Lưu cài đặt",
         "settings_browse_dialog_title": "Chọn thư mục tải về mặc định",
 
+        # New UI labels (Dialogs & Errors)
+        "confirm_later_tip": "Thêm vào danh sách tải ở trạng thái Tạm dừng (tải sau)",
+        "confirm_start_tip": "Bắt đầu tải tệp ngay lập tức (Nhấn Enter)",
+        "add_manifest_ready": "✓ Đã bắt được luồng HLS từ trình duyệt (m3u8){extra} — sẵn sàng tải, không cần kiểm tra URL.",
+        "add_manifest_qualities": " — {count} mức chất lượng khả dụng",
+        "add_size_unknown": "Không rõ kích thước",
+        "add_probe_insufficient_space": "📦 Dung lượng: {size}  •  {range}\n⚠️ {space} (Không đủ dung lượng tải!)",
+        "detail_size_unknown": "Không rõ",
+        "detail_processing_fallback": "Đang xử lý / chuyển đổi tệp...",
+        "detail_lbl_error": "Chi tiết lỗi:",
+        "err_open_file_title": "Lỗi mở tệp",
+        "err_open_file_msg": "Không thể mở tệp: {error}",
+
         # About Dialog
         "about_title": "Giới thiệu — H2M Download Manager",
-        "about_text": "<h2>H2M Download Manager v1.0</h2><p>Trình quản lý tải file đa luồng hiệu năng cao bằng Python & Qt6.</p><p>© 2026 H2M Team. Bản quyền thuộc về tác giả.</p>",
+        "about_text": f"<h2>H2M Download Manager v{__version__}</h2><p>Trình quản lý tải file đa luồng hiệu năng cao bằng Python & Qt6.</p><p>© 2026 H2M Team. Bản quyền thuộc về tác giả.</p>",
     },
 
     LANG_EN: {
         # App & Window
         "app_title": "H2M Download Manager",
         "app_subtitle": "DOWNLOAD MANAGER",
-        "app_version_footer": "H2M Download Manager v1.0",
+        "app_version_footer": f"H2M Download Manager v{__version__}",
 
         # Menus
         "menu_file": "File",
@@ -589,9 +604,22 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "settings_btn_save": "Save Settings",
         "settings_browse_dialog_title": "Choose default download directory",
 
+        # New UI labels (Dialogs & Errors)
+        "confirm_later_tip": "Add to the download list as Paused (download later)",
+        "confirm_start_tip": "Start downloading immediately (Press Enter)",
+        "add_manifest_ready": "✓ Browser HLS stream captured (m3u8){extra} — ready to download without probing URL.",
+        "add_manifest_qualities": " — {count} quality levels available",
+        "add_size_unknown": "Unknown size",
+        "add_probe_insufficient_space": "📦 Size: {size}  •  {range}\n⚠️ {space} (Insufficient disk space!)",
+        "detail_size_unknown": "Unknown",
+        "detail_processing_fallback": "Processing / converting file...",
+        "detail_lbl_error": "Error details:",
+        "err_open_file_title": "Cannot Open File",
+        "err_open_file_msg": "Could not open file: {error}",
+
         # About Dialog
         "about_title": "About — H2M Download Manager",
-        "about_text": "<h2>H2M Download Manager v1.0</h2><p>High-performance multi-connection download manager built with Python & Qt6.</p><p>© 2026 H2M Team. All rights reserved.</p>",
+        "about_text": f"<h2>H2M Download Manager v{__version__}</h2><p>High-performance multi-connection download manager built with Python & Qt6.</p><p>© 2026 H2M Team. All rights reserved.</p>",
     },
 }
 

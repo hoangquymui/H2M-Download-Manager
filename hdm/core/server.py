@@ -22,6 +22,8 @@ SERVER_VERSION = "1.1.0"
 MAX_BODY_BYTES = 12 * 1024 * 1024         # Download payloads + captured HLS playlist
 MAX_MANIFEST_BYTES = 6 * 1024 * 1024
 MAX_QUALITIES_BYTES = 5 * 1024 * 1024
+REQUEST_READ_TIMEOUT = 10.0               # Seconds allowed per socket read phase
+MAX_HEADER_LINES = 100
 
 # Requests coming from real web pages are rejected; only browser extensions
 # (and non-browser local clients that send no Origin) may talk to this server.
@@ -132,7 +134,12 @@ class BrowserIntegrationServer:
     ) -> None:
         """Process incoming HTTP requests from the browser extension."""
         try:
-            request_line = await reader.readline()
+            try:
+                request_line = await asyncio.wait_for(
+                    reader.readline(), timeout=REQUEST_READ_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                return
             if not request_line:
                 return
 
@@ -142,14 +149,21 @@ class BrowserIntegrationServer:
                 return
 
             method = parts[0].upper()
-            path = parts[1]
+            path = parts[1].split("?", 1)[0]
 
             headers: Dict[str, str] = {}
             content_length = 0
-            while True:
-                header_line = await reader.readline()
+            header_count = 0
+            while header_count < MAX_HEADER_LINES:
+                try:
+                    header_line = await asyncio.wait_for(
+                        reader.readline(), timeout=REQUEST_READ_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    return
                 if not header_line or header_line == b"\r\n" or header_line == b"\n":
                     break
+                header_count += 1
                 header_str = header_line.decode("utf-8", errors="ignore").strip()
                 if ":" in header_str:
                     k, v = header_str.split(":", 1)
@@ -158,7 +172,7 @@ class BrowserIntegrationServer:
                         try:
                             content_length = int(v.strip())
                         except ValueError:
-                            pass
+                            content_length = -1
 
             origin = headers.get("origin", "")
             allowed_origin = origin if origin and _EXTENSION_ORIGIN_RE.match(origin) else ""
@@ -184,6 +198,16 @@ class BrowserIntegrationServer:
                 )
                 return
 
+            if content_length < 0:
+                self._send_json(
+                    writer,
+                    {"ok": False, "error": "Invalid Content-Length"},
+                    status=400,
+                    status_text="Bad Request",
+                    origin=allowed_origin,
+                )
+                return
+
             if content_length > MAX_BODY_BYTES:
                 self._send_json(
                     writer,
@@ -196,7 +220,19 @@ class BrowserIntegrationServer:
 
             body_bytes = b""
             if content_length > 0:
-                body_bytes = await reader.readexactly(content_length)
+                try:
+                    body_bytes = await asyncio.wait_for(
+                        reader.readexactly(content_length), timeout=REQUEST_READ_TIMEOUT
+                    )
+                except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+                    self._send_json(
+                        writer,
+                        {"ok": False, "error": "Incomplete or timed out request body"},
+                        status=400,
+                        status_text="Bad Request",
+                        origin=allowed_origin,
+                    )
+                    return
 
             if method == "GET" and path == "/api/v1/status":
                 resp_data = {

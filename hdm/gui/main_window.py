@@ -61,6 +61,13 @@ STATUS_FILTER_CODES = [
     "status_error",
 ]
 
+ACTIVE_TASK_STATUSES = (
+    TaskStatus.DOWNLOADING,
+    TaskStatus.CONNECTING,
+    TaskStatus.QUEUED,
+    TaskStatus.PROCESSING,
+)
+
 CATEGORY_FILTER_CODES = [
     "cat_video",
     "cat_audio",
@@ -117,6 +124,7 @@ class MainBridge(QObject):
     """Bridge for cross-thread signals into the Qt GUI thread."""
     task_added_signal = Signal(object)
     task_updated_signal = Signal(object)
+    task_removed_signal = Signal(str)
     show_window_signal = Signal()
     download_requested_signal = Signal(dict)
 
@@ -133,19 +141,25 @@ class MainWindow(QMainWindow):
         self.bridge = MainBridge()
         self.bridge.task_added_signal.connect(self._on_task_added_signal)
         self.bridge.task_updated_signal.connect(self._on_task_updated_signal)
+        self.bridge.task_removed_signal.connect(self._on_task_removed_signal)
         self.bridge.show_window_signal.connect(self.show_and_raise)
         self.bridge.download_requested_signal.connect(self.show_confirm_download_dialog)
 
         # Connect manager callbacks to bridge
         self.manager.on_task_added = lambda t: self.bridge.task_added_signal.emit(t)
         self.manager.on_task_updated = lambda t: self.bridge.task_updated_signal.emit(t)
+        self.manager.on_task_removed = lambda tid: self.bridge.task_removed_signal.emit(tid)
 
         self.current_filter_category: Optional[str] = None
-        self.current_filter_status: Optional[TaskStatus] = None
+        self.current_filter_status: Optional[Any] = None
         self.current_filter_code: str = "all"
         self.search_query: str = ""
         self.batch_mode_active: bool = False
         self._table_loading: bool = False
+        self._notified_completed_ids: set[str] = set()
+        self._status_snapshot: Dict[str, TaskStatus] = {
+            tid: t.status for tid, t in list(self.manager.tasks.items())
+        }
 
         self._active_confirm_dialog: Optional[AddDownloadDialog] = None
         self._pending_download_requests: List[Dict[str, Any]] = []
@@ -459,7 +473,7 @@ class MainWindow(QMainWindow):
         all_tasks = list(self.manager.tasks.values())
         counts = {
             "all": len(all_tasks),
-            "status_downloading": sum(1 for t in all_tasks if t.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING)),
+            "status_downloading": sum(1 for t in all_tasks if t.status in ACTIVE_TASK_STATUSES),
             "status_completed": sum(1 for t in all_tasks if t.status == TaskStatus.COMPLETED),
             "status_paused": sum(1 for t in all_tasks if t.status == TaskStatus.PAUSED),
             "status_error": sum(1 for t in all_tasks if t.status == TaskStatus.ERROR),
@@ -695,7 +709,7 @@ class MainWindow(QMainWindow):
         can_resume = task.status in (TaskStatus.PAUSED, TaskStatus.ERROR, TaskStatus.CANCELLED)
         self.btn_resume_action.setEnabled(can_resume)
 
-        can_pause = task.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.QUEUED)
+        can_pause = task.status in ACTIVE_TASK_STATUSES
         self.btn_pause_action.setEnabled(can_pause)
 
         self.btn_delete_action.setEnabled(True)
@@ -976,12 +990,16 @@ class MainWindow(QMainWindow):
             self._update_table_headers()
         if hasattr(self, "sidebar"):
             current_code = self.current_filter_code
-            self._build_sidebar()
-            for i in range(self.sidebar.count()):
-                item = self.sidebar.item(i)
-                if item and item.data(Qt.UserRole) == current_code:
-                    self.sidebar.setCurrentRow(i)
-                    break
+            self.sidebar.blockSignals(True)
+            try:
+                self._build_sidebar()
+                for i in range(self.sidebar.count()):
+                    item = self.sidebar.item(i)
+                    if item and item.data(Qt.UserRole) == current_code:
+                        self.sidebar.setCurrentRow(i)
+                        break
+            finally:
+                self.sidebar.blockSignals(False)
 
         if hasattr(self, "empty_label"):
             self.empty_label.setText(tr("empty_state_text"))
@@ -1037,7 +1055,7 @@ class MainWindow(QMainWindow):
         if code == "all":
             pass
         elif code == "status_downloading":
-            self.current_filter_status = TaskStatus.DOWNLOADING
+            self.current_filter_status = ACTIVE_TASK_STATUSES
         elif code == "status_completed":
             self.current_filter_status = TaskStatus.COMPLETED
         elif code == "status_paused":
@@ -1064,7 +1082,10 @@ class MainWindow(QMainWindow):
     def _get_filtered_tasks(self) -> List[DownloadTask]:
         tasks = list(self.manager.tasks.values())
         if self.current_filter_status is not None:
-            tasks = [t for t in tasks if t.status == self.current_filter_status]
+            if isinstance(self.current_filter_status, tuple):
+                tasks = [t for t in tasks if t.status in self.current_filter_status]
+            else:
+                tasks = [t for t in tasks if t.status == self.current_filter_status]
         if self.current_filter_category is not None:
             cat_val = self.current_filter_category
             tasks = [
@@ -1088,6 +1109,10 @@ class MainWindow(QMainWindow):
         return tasks
 
     def _reload_table_full(self) -> None:
+        checked_ids = set(self._get_checked_task_ids()) if getattr(self, "batch_mode_active", False) else set()
+        selected_task = self._get_selected_task()
+        selected_id = selected_task.id if selected_task else None
+
         self._table_loading = True
         try:
             tasks = self._get_filtered_tasks()
@@ -1096,12 +1121,16 @@ class MainWindow(QMainWindow):
             colors = self.palette_colors
             bold_font = QFont()
             bold_font.setBold(True)
+            selected_row = -1
 
             for row, task in enumerate(tasks):
+                if task.id == selected_id:
+                    selected_row = row
+
                 # 0. Checkbox for batch actions
                 chk_item = QTableWidgetItem()
                 chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                chk_item.setCheckState(Qt.Unchecked)
+                chk_item.setCheckState(Qt.Checked if task.id in checked_ids else Qt.Unchecked)
                 chk_item.setData(Qt.UserRole, task.id)
                 chk_item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row, 0, chk_item)
@@ -1170,6 +1199,8 @@ class MainWindow(QMainWindow):
                 item_status.setTextAlignment(Qt.AlignCenter)
                 item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
                 item_status.setFont(bold_font)
+                if task.error_message and task.status in (TaskStatus.ERROR, TaskStatus.PROCESSING):
+                    item_status.setToolTip(task.error_message)
                 self.table.setItem(row, 7, item_status)
 
                 # 8. Date
@@ -1177,9 +1208,13 @@ class MainWindow(QMainWindow):
                 item_date.setTextAlignment(Qt.AlignCenter)
                 item_date.setForeground(QColor(colors["muted"]))
                 self.table.setItem(row, 8, item_date)
+
+            if selected_row >= 0:
+                self.table.selectRow(selected_row)
         finally:
             self._table_loading = False
 
+        self._status_snapshot = {tid: t.status for tid, t in list(self.manager.tasks.items())}
         self._update_sidebar_counts()
         self._sync_empty_state()
         self._update_action_states()
@@ -1188,9 +1223,27 @@ class MainWindow(QMainWindow):
 
     def _refresh_table_data(self) -> None:
         """Poll and refresh row progress, speeds, and status bar."""
+        current_tasks = list(self.manager.tasks.values())
+        current_snapshot = {t.id: t.status for t in current_tasks}
+        status_changed = current_snapshot != self._status_snapshot
+
+        visible_ids = [t.id for t in self._get_filtered_tasks()]
+        table_ids = []
+        for row in range(self.table.rowCount()):
+            cell = self.table.item(row, 1) or self.table.item(row, 0)
+            if cell:
+                table_ids.append(cell.data(Qt.UserRole))
+
+        if visible_ids != table_ids:
+            self._reload_table_full()
+            # Status/sidebar counts already synced inside _reload_table_full
+        elif status_changed:
+            self._status_snapshot = current_snapshot
+            self._update_sidebar_counts()
+
         total_speed = self.manager.get_total_speed()
         active_count = self.manager.get_active_count()
-        total_count = len(self.manager.tasks)
+        total_count = len(current_tasks)
 
         self.lbl_speed_summary.setText(tr("status_speed", speed=format_speed(total_speed)))
         if active_count > 0:
@@ -1214,6 +1267,21 @@ class MainWindow(QMainWindow):
             task = self.manager.tasks.get(task_id)
             if not task:
                 continue
+
+            # Update filename, category & size if probe or completion updated them
+            if item_name.text() != task.filename:
+                item_name.setText(task.filename)
+                item_name.setToolTip(f"{task.filename}\n{task.url}")
+            item_cat = self.table.item(row, 2)
+            if item_cat:
+                cat_disp = get_category_display(task.category)
+                if item_cat.text() != cat_disp:
+                    item_cat.setText(cat_disp)
+            item_size = self.table.item(row, 3)
+            if item_size:
+                size_str = format_bytes(task.total_bytes) if task.total_bytes > 0 else "--"
+                if item_size.text() != size_str:
+                    item_size.setText(size_str)
 
             # Update progress bar
             container = self.table.cellWidget(row, 4)
@@ -1255,18 +1323,33 @@ class MainWindow(QMainWindow):
                 item_status.setText(get_status_display(task.status))
                 item_status.setForeground(QColor(self.status_colors.get(task.status, colors["text"])))
                 item_status.setFont(bold_font)
+                tip = task.error_message if task.status in (TaskStatus.ERROR, TaskStatus.PROCESSING) else ""
+                item_status.setToolTip(tip)
 
     def _on_task_added_signal(self, task: DownloadTask) -> None:
+        self._notified_completed_ids.discard(task.id)
+        self._reload_table_full()
+
+    def _on_task_removed_signal(self, task_id: str) -> None:
+        self._notified_completed_ids.discard(task_id)
         self._reload_table_full()
 
     def _on_task_updated_signal(self, task: DownloadTask) -> None:
-        # Check if completed to show balloon notification
-        if task.status == TaskStatus.COMPLETED and hasattr(self, "tray") and self.tray.isVisible():
+        if task.status != TaskStatus.COMPLETED:
+            self._notified_completed_ids.discard(task.id)
+            return
+        # Show balloon notification at most once per completion
+        if (
+            task.id not in self._notified_completed_ids
+            and hasattr(self, "tray")
+            and self.tray.isVisible()
+        ):
+            self._notified_completed_ids.add(task.id)
             self.tray.showMessage(
                 "HDM",
                 f"{task.filename} ({tr('sidebar_status_completed').lower()})",
                 QSystemTrayIcon.Information,
-                3000
+                3000,
             )
 
     def _get_selected_task(self) -> Optional[DownloadTask]:
@@ -1297,7 +1380,7 @@ class MainWindow(QMainWindow):
         try:
             launch_file(task.full_path)
         except Exception as e:
-            QMessageBox.warning(self, "Lỗi mở tệp", f"Không thể mở tệp: {e}")
+            QMessageBox.warning(self, tr("err_open_file_title"), tr("err_open_file_msg", error=e))
 
     def _on_table_double_clicked(self) -> None:
         task = self._get_selected_task()
@@ -1327,7 +1410,7 @@ class MainWindow(QMainWindow):
             act_resume = menu.addAction(tr("ctx_resume"))
             act_resume.setIcon(get_icon("resume", text_color, size=16))
             act_resume.triggered.connect(lambda: self.manager.start_task(task.id))
-        elif task.status in (TaskStatus.DOWNLOADING, TaskStatus.CONNECTING, TaskStatus.QUEUED):
+        elif task.status in ACTIVE_TASK_STATUSES:
             act_pause = menu.addAction(tr("ctx_pause"))
             act_pause.setIcon(get_icon("pause", text_color, size=16))
             act_pause.triggered.connect(lambda: self.manager.pause_task(task.id))

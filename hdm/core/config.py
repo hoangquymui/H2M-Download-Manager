@@ -91,7 +91,32 @@ class Config:
     def from_dict(cls, data: Dict[str, Any]) -> Config:
         valid_keys = cls.__dataclass_fields__.keys()
         filtered = {k: v for k, v in data.items() if k in valid_keys}
-        return cls(**filtered)
+        cfg = cls(**filtered)
+        cfg.clamp_values()
+        return cfg
+
+    def clamp_values(self) -> None:
+        """Normalize numeric and container fields loaded from untrusted/older configs."""
+        def _int(val: Any, default: int, lo: int, hi: int) -> int:
+            try:
+                num = int(val)
+            except (TypeError, ValueError):
+                return default
+            return max(lo, min(hi, num))
+
+        self.max_concurrent_tasks = _int(self.max_concurrent_tasks, 3, 1, 10)
+        self.default_connections = _int(self.default_connections, 8, 1, 32)
+        self.min_chunk_size = _int(self.min_chunk_size, 1048576, 65536, 104857600)
+        self.server_port = _int(self.server_port, 9618, 1024, 65535)
+        self.speed_limit_kbps = _int(self.speed_limit_kbps, 0, 0, 10000000)
+        if not isinstance(self.user_agent, str) or not self.user_agent.strip():
+            self.user_agent = DEFAULT_USER_AGENT
+        if not isinstance(self.category_extensions, dict):
+            self.category_extensions = {}
+        if not isinstance(self.category_folders, dict):
+            self.category_folders = {}
+        if not isinstance(self.site_credentials, dict):
+            self.site_credentials = {}
 
 
 class ConfigManager:

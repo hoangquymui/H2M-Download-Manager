@@ -89,6 +89,9 @@ class AsyncEngineThread(QThread):
         logger.info("Async Engine background loop running.")
         await self._stop_event.wait()
 
+        # Gracefully pause active downloads so writers flush & resume metadata persists.
+        await self.manager.shutdown(timeout=1.5)
+
         # Graceful shutdown of integration server
         if self.server:
             await self.server.stop()
@@ -131,7 +134,7 @@ class AsyncEngineThread(QThread):
         if self.loop and self.loop.is_running():
             if self._stop_event:
                 self.loop.call_soon_threadsafe(self._stop_event.set)
-        self.wait(2000)
+        self.wait(3000)
 
 
 def main() -> None:
@@ -206,6 +209,7 @@ def main() -> None:
                 else:
                     main_window.bridge.show_window_signal.emit()
 
+            client.disconnected.connect(client.deleteLater)
             client.readyRead.connect(handle_ipc_read)
             if client.bytesAvailable() > 0:
                 handle_ipc_read()

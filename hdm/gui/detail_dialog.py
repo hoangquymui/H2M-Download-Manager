@@ -103,6 +103,15 @@ class DownloadDetailDialog(QDialog):
         self.lbl_speed.setObjectName("dialog_value_info")
         grid.addWidget(self.lbl_speed, 2, 3)
 
+        # Error banner (hidden unless task is in ERROR state)
+        self.lbl_error_title = QLabel(tr("detail_lbl_error"))
+        self.lbl_error_value = QLabel("")
+        self.lbl_error_value.setWordWrap(True)
+        self.lbl_error_title.setVisible(False)
+        self.lbl_error_value.setVisible(False)
+        grid.addWidget(self.lbl_error_title, 3, 0, Qt.AlignTop)
+        grid.addWidget(self.lbl_error_value, 3, 1, 1, 3)
+
         card_layout.addLayout(grid)
         layout.addWidget(card)
 
@@ -192,7 +201,7 @@ class DownloadDetailDialog(QDialog):
 
         # Size display
         down_str = format_bytes(self.task.downloaded_bytes)
-        tot_str = format_bytes(self.task.total_bytes) if self.task.total_bytes > 0 else "Không rõ"
+        tot_str = format_bytes(self.task.total_bytes) if self.task.total_bytes > 0 else tr("detail_size_unknown")
         self.lbl_size.setText(f"{down_str} / {tot_str} ({self.task.progress_percent:.1f}%)")
 
         # Speed and ETA
@@ -201,9 +210,17 @@ class DownloadDetailDialog(QDialog):
             eta_str = format_eta(self.task.eta)
             self.lbl_speed.setText(f"{speed_str}  ({tr('detail_remaining', eta=eta_str)})")
         elif self.task.status == TaskStatus.PROCESSING:
-            self.lbl_speed.setText(self.task.error_message or "Đang xử lý / chuyển đổi tệp...")
+            self.lbl_speed.setText(self.task.error_message or tr("detail_processing_fallback"))
         else:
             self.lbl_speed.setText("--")
+
+        # Error details banner
+        has_err = self.task.status == TaskStatus.ERROR and bool(self.task.error_message)
+        self.lbl_error_title.setVisible(has_err)
+        self.lbl_error_value.setVisible(has_err)
+        if has_err:
+            self.lbl_error_value.setText(self.task.error_message)
+            self.lbl_error_value.setStyleSheet(f"color: {colors['danger']}; font-weight: 600;")
 
         # Progress bar
         self.progress_bar.setValue(int(self.task.progress_percent))
@@ -240,7 +257,7 @@ class DownloadDetailDialog(QDialog):
         try:
             launch_file(self.task.full_path)
         except Exception as e:
-            QMessageBox.warning(self, "Lỗi mở tệp", f"Không thể mở tệp: {e}")
+            QMessageBox.warning(self, tr("err_open_file_title"), tr("err_open_file_msg", error=e))
 
     def closeEvent(self, event) -> None:
         self.timer.stop()

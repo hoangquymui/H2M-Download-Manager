@@ -60,11 +60,14 @@ def nuitka_command(compiler: str, version: str) -> list:
         f"--windows-icon-from-ico={ICON_PATH}",
         # get_app_icon() also looks for app.ico beside the executable.
         "--include-data-files=app.ico=app.ico",
-        # yt-dlp resolves extractors at runtime by module name.
+        # yt-dlp resolves extractors and curl_cffi TLS impersonation lazily.
         "--include-package=yt_dlp",
         "--include-package-data=yt_dlp",
         "--include-package=yt_dlp_ejs",
         "--include-package-data=yt_dlp_ejs",
+        "--include-package=curl_cffi",
+        "--include-package-data=curl_cffi",
+        "--include-package=imageio_ffmpeg",
         "--include-package-data=imageio_ffmpeg",
         "--include-package-data=certifi",
         # httpx imports socksio lazily; keep SOCKS proxies working in the build.
