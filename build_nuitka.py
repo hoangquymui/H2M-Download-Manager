@@ -77,6 +77,8 @@ def nuitka_command(compiler: str, version: str) -> list:
         "--include-distribution-metadata=yt-dlp-ejs",
         f"--output-dir={BUILD_DIR}",
         "--output-filename=HDM.exe",
+        # yt_dlp.extractor.lazy_extractors generates a huge C unit that hits MSVC C1002 without --low-memory.
+        "--low-memory",
         "--company-name=H2M Team",
         "--product-name=HDM",
         "--file-description=HDM - H2M Download Manager",
