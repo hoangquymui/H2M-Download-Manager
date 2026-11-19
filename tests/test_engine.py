@@ -968,6 +968,91 @@ def test_streaming_placeholder_title_and_status_reset(monkeypatch):
         assert ffmpeg_loc.lower().endswith(".exe"), f"Expected full exe path for imageio_ffmpeg, got {ffmpeg_loc!r}"
 
 
+def test_loopback_self_signed_https():
+    """Loopback HTTPS URLs (localhost/127.0.0.1) accept self-signed dev certs while public hosts keep TLS verify."""
+    import datetime
+    import ssl
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+    from hdm.core.engine import is_loopback_url, ssl_verify_for_url
+
+    assert is_loopback_url("https://localhost:7101/SlideEditor/x/export") is True
+    assert is_loopback_url("https://127.0.0.1:8443/a.zip") is True
+    assert is_loopback_url("https://[::1]:5000/a.zip") is True
+    assert is_loopback_url("https://sub.localhost/a.zip") is True
+    assert ssl_verify_for_url("https://localhost:7101/export") is False
+    assert ssl_verify_for_url("https://example.com/file.zip") is True
+    assert ssl_verify_for_url("https://localhost.evil.com/file.zip") is True
+
+    payload = b"SELF_SIGNED_LOCAL_EXPORT_OK_" * 1000
+
+    class ExportHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", 'attachment; filename="slides_export.pptx"')
+            self.end_headers()
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Disposition", 'attachment; filename="slides_export.pptx"')
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            pass
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        cert_file = os.path.join(td, "cert.pem")
+        key_file = os.path.join(td, "key.pem")
+        with open(cert_file, "wb") as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+        with open(key_file, "wb") as f:
+            f.write(
+                key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.TraditionalOpenSSL,
+                    serialization.NoEncryption(),
+                )
+            )
+
+        srv = HTTPServer(("127.0.0.1", 0), ExportHandler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        try:
+            url = f"https://localhost:{srv.server_port}/SlideEditor/demo/export"
+            t = DownloadTask(url=url, filename="export", save_dir=td, num_connections=1)
+            eng = DownloadEngine(task=t)
+            assert asyncio.run(eng.run()), t.error_message
+            assert t.filename == "slides_export.pptx"
+            with open(os.path.join(td, "slides_export.pptx"), "rb") as f:
+                assert f.read() == payload
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 if __name__ == "__main__":
     asyncio.run(run_engine_test())
     asyncio.run(run_proxy_test())

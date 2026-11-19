@@ -38,6 +38,7 @@ from hdm.core.engine import (
     _write_cookiefile,
     is_streaming_domain,
     is_streaming_url,
+    ssl_verify_for_url,
 )
 from hdm.core.sparse_file import check_free_space
 from hdm.gui.icons import get_icon
@@ -144,6 +145,7 @@ class ProbeWorker(QThread):
                 headers={"Accept-Encoding": "identity"},
                 proxy=self.proxy_url or None,
                 auth=self._site_auth(),
+                verify=ssl_verify_for_url(self.url),
             ) as client:
                 head_resp = None
                 try:

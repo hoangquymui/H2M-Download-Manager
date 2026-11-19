@@ -121,6 +121,22 @@ def is_streaming_url(url: str) -> bool:
     return is_streaming_domain(url)
 
 
+def is_loopback_url(url: str) -> bool:
+    """True when *url* points to the local machine (localhost / 127.0.0.1 / ::1)."""
+    if not url:
+        return False
+    try:
+        host = (urlparse(url.strip()).hostname or "").strip(".").lower()
+    except ValueError:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
+def ssl_verify_for_url(url: str) -> bool:
+    """Allow local dev self-signed certificates on loopback hosts while enforcing TLS elsewhere."""
+    return not is_loopback_url(url)
+
+
 HEIGHT_QUALITIES = ("1080", "720", "480", "360", "240", "144")
 
 # YouTube-family hosts handle authentication and URL signing themselves. Raw
@@ -747,6 +763,7 @@ class DownloadEngine:
             headers=headers,
             proxy=self.proxy_url or None,
             auth=self._site_auth(),
+            verify=ssl_verify_for_url(self.task.url),
         ) as client:
             for line in manifest.splitlines():
                 if not line.startswith("#EXT-X-KEY") or "METHOD=AES-128" not in line.upper():
@@ -1148,6 +1165,7 @@ class DownloadEngine:
             http2=True,
             proxy=self.proxy_url or None,
             auth=self._site_auth(),
+            verify=ssl_verify_for_url(self.task.url),
         ) as client:
             # 1. Probe server metadata if not yet known
             if self.task.total_bytes <= 0:
